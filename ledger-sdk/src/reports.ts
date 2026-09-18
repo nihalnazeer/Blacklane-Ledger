@@ -1,5 +1,7 @@
 import { ApiClient } from "./client";
 import type {
+  DailyClosing,
+  DailyClosingCreate,
   MonthlyClosing,
   MonthlyClosingCreate,
   MonthlyClosingUpdate,
@@ -38,6 +40,30 @@ export class ReportsApi {
       `/api/v1/businesses/${businessId}/reports/daily?report_date=${encodeURIComponent(
         reportDate,
       )}`,
+    );
+  }
+
+  getDailyClosing(
+    businessId: string,
+    reportDate: string,
+  ): Promise<DailyClosing> {
+    return this.client.get<DailyClosing>(
+      `/api/v1/businesses/${businessId}/reports/daily/${encodeURIComponent(
+        reportDate,
+      )}/closing`,
+    );
+  }
+
+  closeDay(
+    businessId: string,
+    reportDate: string,
+    data: DailyClosingCreate,
+  ): Promise<DailyClosing> {
+    return this.client.post<DailyClosing>(
+      `/api/v1/businesses/${businessId}/reports/daily/${encodeURIComponent(
+        reportDate,
+      )}/closing`,
+      data,
     );
   }
 

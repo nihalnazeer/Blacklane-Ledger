@@ -1,14 +1,26 @@
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ledger.domains.auth.schemas import LoginRequest, TokenResponse
+from ledger.domains.auth.schemas import (
+    LoginRequest,
+    SignupRequest,
+    TokenResponse,
+)
 from ledger.domains.auth.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    hash_password,
     verify_password,
 )
-from ledger.domains.users.service import get_user_by_email, get_user_by_id
+from ledger.domains.businesses.models import Business, BusinessMember
+from ledger.domains.users.models import User, UserRole
+from ledger.domains.users.schemas import UserCreate
+from ledger.domains.users.service import (
+    create_user,
+    get_user_by_email,
+    get_user_by_id,
+)
 
 
 async def authenticate_user(
@@ -34,6 +46,57 @@ async def authenticate_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive",
         )
+
+    user_id = str(user.id)
+
+    return TokenResponse(
+        access_token=create_access_token(user_id),
+        refresh_token=create_refresh_token(user_id),
+    )
+
+
+async def signup_user(
+    session: AsyncSession,
+    credentials: SignupRequest,
+) -> TokenResponse:
+    existing_user = await get_user_by_email(
+        session,
+        credentials.email,
+    )
+
+    if existing_user is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A user with this email already exists",
+        )
+
+    user = User(
+        email=credentials.email.lower(),
+        password_hash=hash_password(credentials.password),
+        role=UserRole.USER.value,
+    )
+
+    session.add(user)
+    await session.flush()
+
+    business = Business(
+        name=credentials.business_name,
+        business_type=credentials.business_type.value,
+    )
+
+    session.add(business)
+    await session.flush()
+
+    membership = BusinessMember(
+        business_id=business.id,
+        user_id=user.id,
+        role="owner",
+    )
+
+    session.add(membership)
+
+    await session.commit()
+    await session.refresh(user)
 
     user_id = str(user.id)
 

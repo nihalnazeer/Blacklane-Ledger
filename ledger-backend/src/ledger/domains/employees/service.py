@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ledger.domains.businesses.models import Business, BusinessMember, BusinessType
 from ledger.domains.employees.models import (
     Employee,
+    EmployeeAttendanceStatus,
+    EmployeeDailyRecord,
+    EmployeeShift,
     EmployeeFinancialEvent,
     EmployeeFinancialEventType,
     EmployeeNote,
@@ -19,10 +22,14 @@ from ledger.domains.employees.schemas import (
     EmployeeCreate,
     EmployeeFinancialEventCreate,
     EmployeeFinancialEventUpdate,
+    EmployeeDailyRecordCreate,
+    EmployeeDailyRecordUpdate,
     EmployeeNoteCreate,
     EmployeeNoteUpdate,
     EmployeeUpdate,
 )
+
+
 
 
 ZERO = Decimal("0.00")
@@ -89,18 +96,18 @@ async def list_employees(
     return list(result.scalars().all())
 
 
+
 async def create_employee(
     session: AsyncSession,
     business_id: uuid.UUID,
     data: EmployeeCreate,
 ) -> Employee:
-    today = date.today()
-
     employee = Employee(
         business_id=business_id,
         name=data.name,
         daily_salary=data.daily_salary,
         payment_method=data.payment_method.value,
+        accounting_start_date=data.accounting_start_date,
     )
 
     session.add(employee)
@@ -109,7 +116,7 @@ async def create_employee(
 
     salary_history = EmployeeSalaryHistory(
         employee_id=employee.id,
-        effective_from=today,
+        effective_from=data.accounting_start_date,
         daily_salary=data.daily_salary,
         payment_method=data.payment_method.value,
     )
@@ -239,6 +246,186 @@ async def get_salary_for_date(
     return employee.daily_salary
 
 
+# ---------------------------------------------------------------------------
+# Daily employee records
+# ---------------------------------------------------------------------------
+
+
+async def get_employee_daily_record(
+    session: AsyncSession,
+    employee_id: uuid.UUID,
+    record_id: uuid.UUID,
+) -> EmployeeDailyRecord | None:
+    result = await session.execute(
+        select(EmployeeDailyRecord).where(
+            EmployeeDailyRecord.id == record_id,
+            EmployeeDailyRecord.employee_id == employee_id,
+        )
+    )
+
+    return result.scalar_one_or_none()
+
+
+async def get_employee_daily_record_by_date_shift(
+    session: AsyncSession,
+    employee_id: uuid.UUID,
+    record_date: date,
+    shift: EmployeeShift,
+) -> EmployeeDailyRecord | None:
+    result = await session.execute(
+        select(EmployeeDailyRecord).where(
+            EmployeeDailyRecord.employee_id == employee_id,
+            EmployeeDailyRecord.record_date == record_date,
+            EmployeeDailyRecord.shift == shift.value,
+        )
+    )
+
+    return result.scalar_one_or_none()
+
+
+async def list_employee_daily_records(
+    session: AsyncSession,
+    employee_id: uuid.UUID,
+    record_date: date | None = None,
+) -> list[EmployeeDailyRecord]:
+    query = select(EmployeeDailyRecord).where(
+        EmployeeDailyRecord.employee_id == employee_id,
+    )
+
+    if record_date is not None:
+        query = query.where(
+            EmployeeDailyRecord.record_date == record_date,
+        )
+
+    query = query.order_by(
+        EmployeeDailyRecord.record_date.desc(),
+        EmployeeDailyRecord.shift,
+        EmployeeDailyRecord.created_at.desc(),
+    )
+
+    result = await session.execute(query)
+
+    return list(result.scalars().all())
+
+
+async def create_employee_daily_record(
+    session: AsyncSession,
+    employee: Employee,
+    data: EmployeeDailyRecordCreate,
+) -> EmployeeDailyRecord:
+    if data.record_date < employee.accounting_start_date:
+        raise ValueError(
+            "Daily record date cannot be before the employee's "
+            "accounting start date"
+        )
+
+    existing = await get_employee_daily_record_by_date_shift(
+        session,
+        employee.id,
+        data.record_date,
+        data.shift,
+    )
+
+    if existing is not None:
+        raise ValueError(
+            "An employee daily record already exists for this date and shift"
+        )
+
+    record = EmployeeDailyRecord(
+        employee_id=employee.id,
+        record_date=data.record_date,
+        shift=data.shift.value,
+        status=data.status.value,
+        salary_amount=data.salary_amount,
+        overtime=data.overtime,
+        salary_cut=data.salary_cut,
+    )
+
+    session.add(record)
+
+    await session.commit()
+    await session.refresh(record)
+
+    return record
+
+
+async def update_employee_daily_record(
+    session: AsyncSession,
+    record: EmployeeDailyRecord,
+    data: EmployeeDailyRecordUpdate,
+) -> EmployeeDailyRecord:
+    update_data = data.model_dump(
+        exclude_unset=True,
+    )
+
+    if "record_date" in update_data:
+        if update_data["record_date"] < (
+            await session.get(Employee, record.employee_id)
+        ).accounting_start_date:
+            raise ValueError(
+                "Daily record date cannot be before the employee's "
+                "accounting start date"
+            )
+
+    new_record_date = update_data.get(
+        "record_date",
+        record.record_date,
+    )
+
+    new_shift = update_data.get(
+        "shift",
+        record.shift,
+    )
+
+    if isinstance(new_shift, EmployeeShift):
+        new_shift_value = new_shift.value
+    else:
+        new_shift_value = new_shift
+
+    duplicate_result = await session.execute(
+        select(EmployeeDailyRecord).where(
+            EmployeeDailyRecord.employee_id == record.employee_id,
+            EmployeeDailyRecord.record_date == new_record_date,
+            EmployeeDailyRecord.shift == new_shift_value,
+            EmployeeDailyRecord.id != record.id,
+        )
+    )
+
+    duplicate = duplicate_result.scalar_one_or_none()
+
+    if duplicate is not None:
+        raise ValueError(
+            "An employee daily record already exists for this date and shift"
+        )
+
+    if "shift" in update_data:
+        update_data["shift"] = new_shift_value
+
+    if "status" in update_data:
+        update_data["status"] = update_data["status"].value
+
+    for field, value in update_data.items():
+        setattr(record, field, value)
+
+    await session.commit()
+    await session.refresh(record)
+
+    return record
+
+
+async def delete_employee_daily_record(
+    session: AsyncSession,
+    record: EmployeeDailyRecord,
+) -> None:
+    await session.delete(record)
+    await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Financial events
+# ---------------------------------------------------------------------------
+
+
 async def get_financial_event(
     session: AsyncSession,
     employee_id: uuid.UUID,
@@ -329,6 +516,114 @@ async def delete_financial_event(
     await session.commit()
 
 
+# ---------------------------------------------------------------------------
+# Employee accounting helpers
+# ---------------------------------------------------------------------------
+
+
+async def _get_daily_records_for_range(
+    session: AsyncSession,
+    employee: Employee,
+    start_date: date,
+    end_date: date,
+) -> list[EmployeeDailyRecord]:
+    if start_date > end_date:
+        return []
+
+    result = await session.execute(
+        select(EmployeeDailyRecord)
+        .where(
+            EmployeeDailyRecord.employee_id == employee.id,
+            EmployeeDailyRecord.record_date >= start_date,
+            EmployeeDailyRecord.record_date <= end_date,
+        )
+        .order_by(
+            EmployeeDailyRecord.record_date,
+            EmployeeDailyRecord.shift,
+        )
+    )
+
+    return list(result.scalars().all())
+
+
+async def _get_financial_events_for_range(
+    session: AsyncSession,
+    employee: Employee,
+    start_date: date,
+    end_date: date,
+) -> list[EmployeeFinancialEvent]:
+    if start_date > end_date:
+        return []
+
+    result = await session.execute(
+        select(EmployeeFinancialEvent)
+        .where(
+            EmployeeFinancialEvent.employee_id == employee.id,
+            EmployeeFinancialEvent.event_date >= start_date,
+            EmployeeFinancialEvent.event_date <= end_date,
+        )
+        .order_by(
+            EmployeeFinancialEvent.event_date,
+            EmployeeFinancialEvent.created_at,
+        )
+    )
+
+    return list(result.scalars().all())
+
+
+def _sum_event_amount(
+    events: list[EmployeeFinancialEvent],
+    event_type: EmployeeFinancialEventType,
+) -> Decimal:
+    return sum(
+        (
+            event.amount
+            for event in events
+            if event.event_type == event_type.value
+        ),
+        ZERO,
+    )
+
+
+def _daily_record_salary(
+    records: list[EmployeeDailyRecord],
+) -> Decimal:
+    return sum(
+        (
+            record.salary_amount
+            for record in records
+            if record.status == EmployeeAttendanceStatus.PRESENT.value
+        ),
+        ZERO,
+    )
+
+
+def _daily_record_overtime(
+    records: list[EmployeeDailyRecord],
+) -> Decimal:
+    return sum(
+        (
+            record.overtime
+            for record in records
+            if record.status == EmployeeAttendanceStatus.PRESENT.value
+        ),
+        ZERO,
+    )
+
+
+def _daily_record_salary_cut(
+    records: list[EmployeeDailyRecord],
+) -> Decimal:
+    return sum(
+        (
+            record.salary_cut
+            for record in records
+            if record.status == EmployeeAttendanceStatus.PRESENT.value
+        ),
+        ZERO,
+    )
+
+
 async def get_employee_balance(
     session: AsyncSession,
     employee: Employee,
@@ -337,114 +632,62 @@ async def get_employee_balance(
     if through_date is None:
         through_date = date.today()
 
-    salary_start_date = employee.created_at.date()
+    if employee.accounting_start_date > through_date:
+        return ZERO
 
-    if salary_start_date > through_date:
-        salary_earned = ZERO
-    else:
-        current_date = salary_start_date
-        salary_earned = ZERO
-
-        while current_date <= through_date:
-            salary = await get_salary_for_date(
-                session,
-                employee,
-                current_date,
-            )
-
-            events_result = await session.execute(
-                select(EmployeeFinancialEvent).where(
-                    EmployeeFinancialEvent.employee_id == employee.id,
-                    EmployeeFinancialEvent.event_date == current_date,
-                )
-            )
-
-            day_events = list(events_result.scalars().all())
-
-            has_leave = any(
-                event.event_type
-                == EmployeeFinancialEventType.LEAVE_NO_SALARY.value
-                for event in day_events
-            )
-
-            if not has_leave:
-                salary_earned += salary
-
-            current_date += timedelta(days=1)
-
-    events_result = await session.execute(
-        select(EmployeeFinancialEvent).where(
-            EmployeeFinancialEvent.employee_id == employee.id,
-            EmployeeFinancialEvent.event_date <= through_date,
-        )
+    daily_records = await _get_daily_records_for_range(
+        session,
+        employee,
+        employee.accounting_start_date,
+        through_date,
     )
 
-    events = list(events_result.scalars().all())
-
-    overtime = sum(
-        (
-            event.amount
-            for event in events
-            if event.event_type
-            == EmployeeFinancialEventType.OVERTIME.value
-        ),
-        ZERO,
+    events = await _get_financial_events_for_range(
+        session,
+        employee,
+        employee.accounting_start_date,
+        through_date,
     )
 
-    leave_no_salary = sum(
-        (
-            event.amount
-            for event in events
-            if event.event_type
-            == EmployeeFinancialEventType.LEAVE_NO_SALARY.value
-        ),
-        ZERO,
+    salary_earned = _daily_record_salary(daily_records)
+    overtime = _daily_record_overtime(daily_records)
+    salary_cut = _daily_record_salary_cut(daily_records)
+
+    payments = _sum_event_amount(
+        events,
+        EmployeeFinancialEventType.PAYMENT,
     )
 
-    payments = sum(
-        (
-            event.amount
-            for event in events
-            if event.event_type
-            == EmployeeFinancialEventType.PAYMENT.value
-        ),
-        ZERO,
+    advances = _sum_event_amount(
+        events,
+        EmployeeFinancialEventType.ADVANCE,
     )
 
-    advances = sum(
-        (
-            event.amount
-            for event in events
-            if event.event_type
-            == EmployeeFinancialEventType.ADVANCE.value
-        ),
-        ZERO,
+    leave_no_salary = _sum_event_amount(
+        events,
+        EmployeeFinancialEventType.LEAVE_NO_SALARY,
     )
 
-    debt_offsets = sum(
-        (
-            event.amount
-            for event in events
-            if event.event_type
-            == EmployeeFinancialEventType.DEBT_OFFSET.value
-        ),
-        ZERO,
+    debt_offsets = _sum_event_amount(
+        events,
+        EmployeeFinancialEventType.DEBT_OFFSET,
     )
 
+    # Daily records contain the actual salary amount and manual salary cuts.
+    # Leave records do not contribute salary.
+    #
+    # Financial-event debt/advance behavior remains as in the existing
+    # system for this iteration. Debt offsets are reported separately but
+    # do not alter the combined balance yet.
     balance = (
         salary_earned
         + overtime
+        - salary_cut
         - leave_no_salary
         - payments
         - advances
     )
 
-    # A debt offset reduces the employee's debt and the amount
-    # payable to them simultaneously, so it has no net effect
-    # on the final combined balance.
-    #
-    # It is still returned separately in the ledger so the user
-    # can see what happened.
     _ = debt_offsets
 
     return balance.quantize(Decimal("0.01"))
@@ -455,82 +698,46 @@ async def get_employee_day_summary(
     employee: Employee,
     target_date: date,
 ) -> dict:
-    salary = await get_salary_for_date(
+    records = await list_employee_daily_records(
         session,
-        employee,
+        employee.id,
         target_date,
     )
 
-    events_result = await session.execute(
-        select(EmployeeFinancialEvent).where(
-            EmployeeFinancialEvent.employee_id == employee.id,
-            EmployeeFinancialEvent.event_date == target_date,
-        )
+    events = await list_financial_events(
+        session,
+        employee.id,
+        target_date,
     )
 
-    events = list(events_result.scalars().all())
+    salary_earned = _daily_record_salary(records)
+    overtime = _daily_record_overtime(records)
+    salary_cut = _daily_record_salary_cut(records)
 
-    has_leave = any(
-        event.event_type
-        == EmployeeFinancialEventType.LEAVE_NO_SALARY.value
-        for event in events
+    leave_no_salary = _sum_event_amount(
+        events,
+        EmployeeFinancialEventType.LEAVE_NO_SALARY,
     )
 
-    salary_earned = ZERO if has_leave else salary
-
-    overtime = sum(
-        (
-            event.amount
-            for event in events
-            if event.event_type
-            == EmployeeFinancialEventType.OVERTIME.value
-        ),
-        ZERO,
+    payments = _sum_event_amount(
+        events,
+        EmployeeFinancialEventType.PAYMENT,
     )
 
-    leave_no_salary = sum(
-        (
-            event.amount
-            for event in events
-            if event.event_type
-            == EmployeeFinancialEventType.LEAVE_NO_SALARY.value
-        ),
-        ZERO,
+    advances = _sum_event_amount(
+        events,
+        EmployeeFinancialEventType.ADVANCE,
     )
 
-    payments = sum(
-        (
-            event.amount
-            for event in events
-            if event.event_type
-            == EmployeeFinancialEventType.PAYMENT.value
-        ),
-        ZERO,
-    )
-
-    advances = sum(
-        (
-            event.amount
-            for event in events
-            if event.event_type
-            == EmployeeFinancialEventType.ADVANCE.value
-        ),
-        ZERO,
-    )
-
-    debt_offsets = sum(
-        (
-            event.amount
-            for event in events
-            if event.event_type
-            == EmployeeFinancialEventType.DEBT_OFFSET.value
-        ),
-        ZERO,
+    debt_offsets = _sum_event_amount(
+        events,
+        EmployeeFinancialEventType.DEBT_OFFSET,
     )
 
     balance = (
         salary_earned
         + overtime
+        - salary_cut
         - leave_no_salary
         - payments
         - advances
@@ -540,11 +747,13 @@ async def get_employee_day_summary(
         "date": target_date,
         "salary_earned": salary_earned.quantize(Decimal("0.01")),
         "overtime": overtime.quantize(Decimal("0.01")),
+        "salary_cut": salary_cut.quantize(Decimal("0.01")),
         "leave_no_salary": leave_no_salary.quantize(Decimal("0.01")),
         "payments": payments.quantize(Decimal("0.01")),
         "advances": advances.quantize(Decimal("0.01")),
         "debt_offsets": debt_offsets.quantize(Decimal("0.01")),
         "balance": balance.quantize(Decimal("0.01")),
+        "has_record": bool(records),
         "has_events": bool(events),
     }
 
@@ -591,10 +800,21 @@ async def get_employee_calendar(
             current_date,
         )
 
-        # Only show salary once the employee actually exists.
-        if current_date < employee.created_at.date():
+        # Dates before the accounting start date are outside the employee's
+        # bookkeeping history. They remain visible in the calendar only when
+        # viewing a historical month, but are marked as having no accounting
+        # activity.
+        if current_date < employee.accounting_start_date:
             summary["salary_earned"] = ZERO
+            summary["overtime"] = ZERO
+            summary["salary_cut"] = ZERO
+            summary["leave_no_salary"] = ZERO
+            summary["payments"] = ZERO
+            summary["advances"] = ZERO
+            summary["debt_offsets"] = ZERO
             summary["balance"] = ZERO
+            summary["has_record"] = False
+            summary["has_events"] = False
 
         days.append(summary)
 
@@ -618,6 +838,12 @@ async def get_employee_ledger(
         session,
         employee,
         through_date=target_date,
+    )
+
+    records = await list_employee_daily_records(
+        session,
+        employee.id,
+        target_date,
     )
 
     events_result = await session.execute(
@@ -656,8 +882,10 @@ async def get_employee_ledger(
         "employee": employee,
         "date": target_date,
         "daily_salary": daily_salary,
+        "daily_records": records,
         "salary_earned": summary["salary_earned"],
         "overtime": summary["overtime"],
+        "salary_cut": summary["salary_cut"],
         "leave_no_salary": summary["leave_no_salary"],
         "payments": summary["payments"],
         "advances": summary["advances"],
@@ -666,7 +894,6 @@ async def get_employee_ledger(
         "events": events,
         "notes": notes,
     }
-
 
 async def create_employee_note(
     session: AsyncSession,

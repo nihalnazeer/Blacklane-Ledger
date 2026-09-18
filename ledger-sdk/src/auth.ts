@@ -1,9 +1,9 @@
-
 import { ApiClient } from "./client";
 import type {
   CurrentUserResponse,
   LoginRequest,
   RefreshRequest,
+  SignupRequest,
   TokenResponse,
 } from "./types";
 
@@ -13,6 +13,13 @@ export class AuthApi {
   login(credentials: LoginRequest): Promise<TokenResponse> {
     return this.client.post<TokenResponse>(
       "/api/v1/auth/login",
+      credentials,
+    );
+  }
+
+  signup(credentials: SignupRequest): Promise<TokenResponse> {
+    return this.client.post<TokenResponse>(
+      "/api/v1/auth/signup",
       credentials,
     );
   }
@@ -34,4 +41,3 @@ export class AuthApi {
     );
   }
 }
-

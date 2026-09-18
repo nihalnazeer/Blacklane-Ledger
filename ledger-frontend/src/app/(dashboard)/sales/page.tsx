@@ -231,7 +231,7 @@ export default function SalesPage() {
 
   const [saleDate, setSaleDate] = useState(getToday());
   const [cashIncome, setCashIncome] = useState("");
-  const [bankBalance, setBankBalance] = useState("");
+  const [atmTopup, setAtmTopup] = useState("");
 
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -323,7 +323,7 @@ export default function SalesPage() {
   );
 
   const monthlyCashIncome = useMemo(
-    () => monthSales.reduce((total, sale) => total + Number(sale.cash_income), 0),
+    () => monthSales.reduce((total, sale) => total + Number(sale.cash_income) + Number(sale.atm_topup), 0),
     [monthSales],
   );
 
@@ -337,7 +337,7 @@ export default function SalesPage() {
     setDuplicateSale(null);
     setSaleDate(prefillDate ?? getToday());
     setCashIncome("");
-    setBankBalance("");
+    setAtmTopup("");
     setFormError(null);
     setIsFormOpen(true);
   }
@@ -347,7 +347,7 @@ export default function SalesPage() {
     setDuplicateSale(null);
     setSaleDate(sale.sale_date);
     setCashIncome(sale.cash_income);
-    setBankBalance(sale.bank_balance);
+    setAtmTopup(sale.atm_topup);
     setFormError(null);
     setIsFormOpen(true);
   }
@@ -377,15 +377,15 @@ export default function SalesPage() {
     }
 
     const cash = Number(cashIncome);
-    const bank = bankBalance.trim() === "" ? null : Number(bankBalance);
+    const topup = atmTopup.trim() === "" ? 0 : Number(atmTopup);
 
     if (!Number.isFinite(cash) || cash < 0) {
       setFormError("Cash income must be zero or greater.");
       return;
     }
 
-    if (bank !== null && (!Number.isFinite(bank) || bank < 0)) {
-      setFormError("Bank balance must be zero or greater.");
+    if (!Number.isFinite(topup) || topup < 0) {
+      setFormError("ATM top-up must be zero or greater.");
       return;
     }
 
@@ -398,7 +398,7 @@ export default function SalesPage() {
         const updatedSale = await sdk.sales.update(businessId, editingSale.id, {
           sale_date: saleDate,
           cash_income: cash.toFixed(2),
-          ...(bank !== null ? { bank_balance: bank.toFixed(2) } : {}),
+          atm_topup: topup.toFixed(2),
         });
 
         setSales((current) =>
@@ -408,7 +408,7 @@ export default function SalesPage() {
         const newSale = await sdk.sales.create(businessId, {
   sale_date: saleDate,
   cash_income: cash.toFixed(2),
-  bank_balance: bank !== null ? bank.toFixed(2) : "0.00",
+  atm_topup: topup.toFixed(2),
 });
 
         setSales((current) => [...current, newSale]);
@@ -591,10 +591,10 @@ export default function SalesPage() {
                 </div>
                 <div>
                   <p className="text-xs" style={{ color: colors.secondary }}>
-                    Bank balance
+                    ATM top-up
                   </p>
                   <p className="mt-1 text-lg font-semibold" style={{ color: colors.secondary }}>
-                    RM {formatMoney(todaySale.bank_balance)}
+                    RM {formatMoney(todaySale.atm_topup)}
                   </p>
                 </div>
               </div>
@@ -664,7 +664,7 @@ export default function SalesPage() {
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="text-xs" style={{ color: colors.secondary }}>
-                Cash income
+                Cash total
               </p>
               <p className="mt-1 text-2xl font-bold tracking-tight" style={{ color: colors.text }}>
                 RM {formatMoney(monthlyCashIncome)}
@@ -751,7 +751,7 @@ export default function SalesPage() {
 
                 {row.sale ? (
                   <span className="text-sm font-bold" style={{ color: colors.text }}>
-                    RM {formatMoney(row.sale.cash_income)}
+                    RM {formatMoney(Number(row.sale.cash_income) + Number(row.sale.atm_topup))}
                   </span>
                 ) : (
                   <span className="text-sm" style={{ color: colors.muted }}>
@@ -777,7 +777,7 @@ export default function SalesPage() {
 
       {/* Bottom navigation (spec section 23) */}
       <nav
-        className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t"
+        className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t md:hidden"
         style={{ backgroundColor: colors.surface, borderColor: colors.border }}
       >
         {[
@@ -813,8 +813,8 @@ export default function SalesPage() {
                   {editingSale ? "Edit sale" : "Add sale"}
                 </h2>
                 <p className="mt-1 text-sm" style={{ color: colors.secondary }}>
-                  Cash income affects the daily balance. Bank balance is a
-                  reference figure.
+                  Cash sales and ATM top-ups are recorded separately, while the
+                  daily cash total combines both.
                 </p>
               </div>
 
@@ -850,7 +850,7 @@ export default function SalesPage() {
 
               <label className="block">
                 <span className="mb-2 block text-sm font-semibold" style={{ color: colors.text }}>
-                  Cash income
+                  Cash sales
                 </span>
                 <div className="relative">
                   <span
@@ -880,7 +880,7 @@ export default function SalesPage() {
 
               <label className="block">
                 <span className="mb-2 block text-sm font-semibold" style={{ color: colors.secondary }}>
-                  Bank balance
+                  ATM top-up
                 </span>
                 <div className="relative">
                   <span
@@ -894,8 +894,8 @@ export default function SalesPage() {
                     min="0"
                     step="0.01"
                     inputMode="decimal"
-                    value={bankBalance}
-                    onChange={(event) => setBankBalance(event.target.value)}
+                    value={atmTopup}
+                    onChange={(event) => setAtmTopup(event.target.value)}
                     placeholder="0.00"
                     className="min-h-12 w-full rounded-md border pl-12 pr-4 text-base outline-none"
                     style={{
@@ -972,7 +972,7 @@ export default function SalesPage() {
               {formatFullDate(deleteTarget.sale_date)}
             </p>
             <p className="mt-1 text-sm" style={{ color: colors.secondary }}>
-              Cash income: RM {formatMoney(deleteTarget.cash_income)}
+              Cash total: RM {formatMoney(Number(deleteTarget.cash_income) + Number(deleteTarget.atm_topup))}
             </p>
 
             <p className="mt-3 text-xs" style={{ color: colors.muted }}>

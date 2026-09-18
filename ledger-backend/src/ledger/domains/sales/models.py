@@ -44,9 +44,10 @@ class Sale(Base):
         nullable=False,
     )
 
-    bank_balance: Mapped[Decimal] = mapped_column(
+    atm_topup: Mapped[Decimal] = mapped_column(
         Numeric(12, 2),
         nullable=False,
+        default=Decimal("0.00"),
     )
 
     created_at: Mapped[datetime] = mapped_column(

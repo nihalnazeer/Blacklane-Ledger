@@ -441,7 +441,7 @@ export default function MonthlyReportPage() {
               </p>
             </div>
 
-            {isClosed && (
+            {isClosed ? (
               <span
                 className="w-fit rounded-full px-3 py-1.5 text-xs font-semibold"
                 style={{
@@ -450,6 +450,17 @@ export default function MonthlyReportPage() {
                 }}
               >
                 Month closed
+              </span>
+            ) : (
+              <span
+                className="w-fit rounded-full px-3 py-1.5 text-xs font-semibold"
+                style={{
+                  backgroundColor: "rgba(224, 184, 110, 0.08)",
+                  border: "1px solid rgba(224, 184, 110, 0.35)",
+                  color: "#D8B477",
+                }}
+              >
+                Review needed
               </span>
             )}
           </div>
@@ -618,12 +629,33 @@ export default function MonthlyReportPage() {
                         {formatDay(day.date)}
                       </p>
 
-                      <p
-                        className="mt-1 text-xs"
-                        style={{ color: colors.muted }}
-                      >
-                        {formatDate(day.date)}
-                      </p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <p
+                          className="text-xs"
+                          style={{ color: colors.muted }}
+                        >
+                          {formatDate(day.date)}
+                        </p>
+
+                        <span
+                          className="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                          style={{
+                            border: `1px solid ${
+                              day.has_data
+                                ? colors.border
+                                : "rgba(224, 184, 110, 0.35)"
+                            }`,
+                            backgroundColor: day.has_data
+                              ? "transparent"
+                              : "rgba(224, 184, 110, 0.08)",
+                            color: day.has_data
+                              ? colors.muted
+                              : "#D8B477",
+                          }}
+                        >
+                          {day.has_data ? "Ready to review" : "Needs entry"}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="flex shrink-0 items-center gap-4">
@@ -1008,7 +1040,7 @@ export default function MonthlyReportPage() {
       </div>
 
       <nav
-        className="fixed inset-x-0 bottom-0 z-40 border-t"
+        className="fixed inset-x-0 bottom-0 z-40 border-t md:hidden"
         style={{
           backgroundColor: colors.surface,
           borderColor: colors.border,

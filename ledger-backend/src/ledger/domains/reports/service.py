@@ -1,9 +1,12 @@
 import calendar
+import hashlib
+import json
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ledger.domains.businesses.models import (
@@ -13,16 +16,31 @@ from ledger.domains.businesses.models import (
 )
 from ledger.domains.employees.models import (
     Employee,
-    EmployeeFinancialEvent,
-    EmployeeFinancialEventType,
+    EmployeeAttendanceStatus,
+    EmployeeDailyRecord,
+    EmployeeShift,
 )
-from ledger.domains.employees.service import get_salary_for_date
 from ledger.domains.expenses.models import Expense, ExpenseType
-from ledger.domains.reports.models import MonthlyReportClosing
+from ledger.domains.reports.models import (
+    DailyReportClosing,
+    MonthlyReportClosing,
+)
 from ledger.domains.sales.models import Sale
 
 
 ZERO = Decimal("0.00")
+
+
+# Blacklane Ledger currently operates on Malaysia business time.
+#
+# This is the BUSINESS/ACCOUNTING timezone, not the timezone of the
+# person using the browser.
+#
+# For now the restaurant business is in Malaysia, so reports use
+# Asia/Kuala_Lumpur when the backend needs to determine "today".
+#
+# User/browser timezone should remain a frontend/UI concern.
+REPORT_TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")
 
 
 async def get_restaurant_business_for_user(
@@ -46,6 +64,22 @@ async def get_restaurant_business_for_user(
     )
 
     return result.scalar_one_or_none()
+
+
+def get_report_today() -> date:
+    """
+    Return the current accounting date in the business timezone.
+
+    The backend runs on infrastructure that may use UTC, so reports
+    should not use datetime.now().date() for business-day logic.
+
+    The business currently operates in Malaysia, so the accounting
+    timezone is Asia/Kuala_Lumpur.
+
+    This is intentionally separate from the user's/browser timezone.
+    """
+
+    return datetime.now(REPORT_TIMEZONE).date()
 
 
 def get_month_name(month: int) -> str:
@@ -154,13 +188,59 @@ async def get_daily_employee_expenses(
     business_id: uuid.UUID,
     target_date: date,
 ) -> tuple[Decimal, Decimal]:
+    """
+    Calculate employee salary and overtime for a report date.
+
+    EmployeeDailyRecord is the source of truth for the current employee
+    attendance/accounting workflow.
+
+    EmployeeDailyRecord contains:
+        - salary_amount
+        - overtime
+        - salary_cut
+        - status
+        - shift
+
+    EmployeeDailyRecord.record_date stores the WORK/SELECTED DATE stored by
+    the employee workflow.
+
+    The shift determines which accounting/report date the record belongs to:
+
+        DAY:
+            work date D -> report/accounting date D
+
+        NIGHT:
+            work date D -> report/accounting date D + 1
+
+    Therefore a report for target_date must include:
+        - DAY records stored on target_date
+        - NIGHT records stored on target_date - 1 day
+
+    The report must not derive dates from the user's/browser timezone or
+    from the time the record was entered.
+
+    Both a DAY and NIGHT record may legitimately contribute to the same
+    employee accounting date, so both are included when applicable.
+
+    A missing EmployeeDailyRecord means that attendance has not been
+    recorded for that employee on the relevant accounting date. In that
+    case, no salary is earned and no salary is added automatically from
+    the employee's configured salary rate.
+
+    Returns:
+        (
+            employee_salary,
+            overtime,
+        )
+
+    employee_salary is the base salary after salary cuts.
+    overtime is reported separately.
+    """
+
     employee_result = await session.execute(
         select(Employee).where(
             Employee.business_id == business_id,
-            Employee.created_at <= datetime.combine(
-                target_date,
-                datetime.max.time(),
-            ),
+            Employee.accounting_start_date <= target_date,
         )
     )
 
@@ -168,48 +248,121 @@ async def get_daily_employee_expenses(
         employee_result.scalars().all()
     )
 
+    if not employees:
+        return ZERO, ZERO
+
+    employee_ids = [employee.id for employee in employees]
+
+    # EmployeeDailyRecord.record_date stores the selected/work date.
+    #
+    # DAY belongs to the same accounting/report date.
+    # NIGHT belongs to the following accounting/report date.
+    #
+    # So, for report date D:
+    #   DAY   -> record_date D
+    #   NIGHT -> record_date D - 1 day
+    #
+    # This keeps the existing stored employee records intact while making
+    # the reporting attribution match the employee workflow.
+    previous_date = target_date - timedelta(days=1)
+
+    daily_records_result = await session.execute(
+        select(EmployeeDailyRecord).where(
+            EmployeeDailyRecord.employee_id.in_(employee_ids),
+            or_(
+                and_(
+                    EmployeeDailyRecord.record_date == target_date,
+                    EmployeeDailyRecord.shift == EmployeeShift.DAY.value,
+                ),
+                and_(
+                    EmployeeDailyRecord.record_date == previous_date,
+                    EmployeeDailyRecord.shift == EmployeeShift.NIGHT.value,
+                ),
+            ),
+        )
+    )
+
+    daily_records = list(
+        daily_records_result.scalars().all()
+    )
+
+    records_by_employee: dict[
+        uuid.UUID,
+        list[EmployeeDailyRecord],
+    ] = {}
+
+    for record in daily_records:
+        records_by_employee.setdefault(
+            record.employee_id,
+            [],
+        ).append(record)
+
     salary_total = ZERO
     overtime_total = ZERO
 
     for employee in employees:
-        salary = await get_salary_for_date(
-            session,
-            employee,
-            target_date,
+        employee_records = records_by_employee.get(
+            employee.id,
+            [],
         )
 
-        if salary is None:
+        # EmployeeDailyRecord is authoritative whenever at least one
+        # attendance record exists for this employee/accounting date.
+        #
+        # This is important because an explicit LEAVE record or a
+        # PRESENT record with zero salary is still a real accounting
+        # record. We must not treat a zero resulting amount as missing
+        # attendance.
+        if employee_records:
+            for record in employee_records:
+                # Leave means no salary and no overtime for this
+                # particular shift record.
+                if (
+                    record.status
+                    == EmployeeAttendanceStatus.LEAVE.value
+                ):
+                    continue
+
+                salary_amount = (
+                    record.salary_amount
+                    if record.salary_amount is not None
+                    else ZERO
+                )
+
+                salary_cut = (
+                    record.salary_cut
+                    if record.salary_cut is not None
+                    else ZERO
+                )
+
+                overtime = (
+                    record.overtime
+                    if record.overtime is not None
+                    else ZERO
+                )
+
+                salary_total += (
+                    salary_amount - salary_cut
+                )
+
+                overtime_total += overtime
+
+            # Do not apply any automatic salary calculation after
+            # processing the attendance records.
             continue
 
-        events_result = await session.execute(
-            select(EmployeeFinancialEvent).where(
-                EmployeeFinancialEvent.employee_id == employee.id,
-                EmployeeFinancialEvent.event_date == target_date,
-            )
-        )
-
-        events = list(
-            events_result.scalars().all()
-        )
-
-        has_leave = any(
-            event.event_type
-            == EmployeeFinancialEventType.LEAVE_NO_SALARY.value
-            for event in events
-        )
-
-        if not has_leave:
-            salary_total += salary
-
-        overtime_total += sum(
-            (
-                event.amount
-                for event in events
-                if event.event_type
-                == EmployeeFinancialEventType.OVERTIME.value
-            ),
-            ZERO,
-        )
+        # No daily attendance record means that attendance has not been
+        # recorded for this employee on this accounting date.
+        #
+        # The employee's configured daily salary is only a salary RATE.
+        # It must not be treated as earned salary automatically.
+        #
+        # Therefore:
+        #   no EmployeeDailyRecord -> no salary earned
+        #
+        # This keeps Reports aligned with the attendance-driven employee
+        # accounting workflow.
+        continue
 
     return salary_total, overtime_total
 
@@ -257,13 +410,19 @@ async def get_daily_report(
         "expenses": {
             "general": expense_breakdown[
                 ExpenseType.GENERAL.value
-            ].quantize(Decimal("0.01")),
+            ].quantize(
+                Decimal("0.01")
+            ),
             "utility": expense_breakdown[
                 ExpenseType.UTILITY.value
-            ].quantize(Decimal("0.01")),
+            ].quantize(
+                Decimal("0.01")
+            ),
             "other": expense_breakdown[
                 ExpenseType.OTHER.value
-            ].quantize(Decimal("0.01")),
+            ].quantize(
+                Decimal("0.01")
+            ),
             "employee_salary": employee_salary.quantize(
                 Decimal("0.01")
             ),
@@ -280,6 +439,97 @@ async def get_daily_report(
     }
 
 
+async def get_daily_closing(
+    session: AsyncSession,
+    business_id: uuid.UUID,
+    report_date: date,
+) -> DailyReportClosing | None:
+    result = await session.execute(
+        select(DailyReportClosing).where(
+            DailyReportClosing.business_id == business_id,
+            DailyReportClosing.report_date == report_date,
+        )
+    )
+
+    return result.scalar_one_or_none()
+
+
+async def get_daily_accounting_fingerprint(
+    session: AsyncSession,
+    business_id: uuid.UUID,
+    report_date: date,
+) -> str:
+    report = await get_daily_report(
+        session,
+        business_id,
+        report_date,
+    )
+
+    payload = {
+        "date": report["date"].isoformat(),
+        "cash_sales": str(report["cash_sales"]),
+        "expenses": {
+            "general": str(report["expenses"]["general"]),
+            "utility": str(report["expenses"]["utility"]),
+            "other": str(report["expenses"]["other"]),
+            "employee_salary": str(report["expenses"]["employee_salary"]),
+            "overtime": str(report["expenses"]["overtime"]),
+            "total": str(report["expenses"]["total"]),
+        },
+        "balance": str(report["balance"]),
+    }
+
+    serialized = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    return hashlib.sha256(serialized).hexdigest()
+
+
+async def create_or_reclose_daily_closing(
+    session: AsyncSession,
+    business_id: uuid.UUID,
+    report_date: date,
+    note: str | None,
+) -> DailyReportClosing:
+    fingerprint = await get_daily_accounting_fingerprint(
+        session,
+        business_id,
+        report_date,
+    )
+
+    closing = await get_daily_closing(
+        session,
+        business_id,
+        report_date,
+    )
+
+    now = datetime.now(REPORT_TIMEZONE)
+
+    if closing is None:
+        closing = DailyReportClosing(
+            business_id=business_id,
+            report_date=report_date,
+            accounting_fingerprint=fingerprint,
+            note=note,
+            is_closed=True,
+            closed_at=now,
+        )
+        session.add(closing)
+    else:
+        closing.accounting_fingerprint = fingerprint
+        closing.note = note
+        closing.is_closed = True
+        closing.closed_at = now
+
+    await session.commit()
+    await session.refresh(closing)
+
+    return closing
+
+
 async def get_monthly_report(
     session: AsyncSession,
     business_id: uuid.UUID,
@@ -288,7 +538,7 @@ async def get_monthly_report(
     today: date | None = None,
 ) -> dict:
     if today is None:
-        today = datetime.now(UTC).date()
+        today = get_report_today()
 
     days = get_available_days(
         year,
@@ -408,7 +658,7 @@ async def get_year_report(
     today: date | None = None,
 ) -> dict:
     if today is None:
-        today = datetime.now(UTC).date()
+        today = get_report_today()
 
     months = []
 
@@ -499,7 +749,7 @@ async def create_monthly_closing(
         bank_balance=bank_balance,
         closing_expense=closing_expense,
         is_closed=True,
-        closed_at=datetime.now(UTC),
+        closed_at=datetime.now(REPORT_TIMEZONE),
     )
 
     session.add(closing)

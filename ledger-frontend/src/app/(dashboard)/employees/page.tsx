@@ -13,6 +13,7 @@ interface Employee {
   name: string;
   daily_salary: string;
   payment_method: PaymentMethod;
+  accounting_start_date: string;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -30,6 +31,14 @@ const colors = {
   error: "#E08A6E",
   errorBackground: "rgba(224, 138, 110, 0.12)",
 };
+
+function getLocalDateString(date: Date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
 
 function formatMoney(value: string | number): string {
   const amount = Number(value);
@@ -75,14 +84,40 @@ export default function EmployeesPage() {
   const [error, setError] = useState<string | null>(null);
   const [sessionExpired, setSessionExpired] = useState(false);
 
+  /* ------------------------------------------------------------------------ */
+  /* Add employee form                                                        */
+  /* ------------------------------------------------------------------------ */
+
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [name, setName] = useState("");
   const [dailySalary, setDailySalary] = useState("");
   const [paymentMethod, setPaymentMethod] =
     useState<PaymentMethod>("monthly");
+  const [accountingStartDate, setAccountingStartDate] = useState("");
 
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  /* ------------------------------------------------------------------------ */
+  /* Edit employee form                                                       */
+  /* ------------------------------------------------------------------------ */
+
+  const [editingEmployee, setEditingEmployee] =
+    useState<Employee | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDailySalary, setEditDailySalary] = useState("");
+  const [editPaymentMethod, setEditPaymentMethod] =
+    useState<PaymentMethod>("monthly");
+  const [editSalaryEffectiveFrom, setEditSalaryEffectiveFrom] =
+    useState("");
+
+  const [isEditFormOpen, setIsEditFormOpen] = useState(false);
+  const [isEditSaving, setIsEditSaving] = useState(false);
+  const [editFormError, setEditFormError] = useState<string | null>(null);
+
+  /* ------------------------------------------------------------------------ */
+  /* Business ID                                                              */
+  /* ------------------------------------------------------------------------ */
 
   useEffect(() => {
     const storedBusinessId = localStorage.getItem("business_id");
@@ -94,6 +129,10 @@ export default function EmployeesPage() {
 
     setBusinessId(storedBusinessId);
   }, [router]);
+
+  /* ------------------------------------------------------------------------ */
+  /* Load employees                                                           */
+  /* ------------------------------------------------------------------------ */
 
   useEffect(() => {
     if (!businessId) {
@@ -149,10 +188,15 @@ export default function EmployeesPage() {
     };
   }, [businessId, router]);
 
+  /* ------------------------------------------------------------------------ */
+  /* Add employee                                                             */
+  /* ------------------------------------------------------------------------ */
+
   function openAddForm() {
     setName("");
     setDailySalary("");
     setPaymentMethod("monthly");
+    setAccountingStartDate("");
     setFormError(null);
     setIsFormOpen(true);
   }
@@ -186,6 +230,11 @@ export default function EmployeesPage() {
       return;
     }
 
+    if (!accountingStartDate) {
+      setFormError("Select the employee's accounting start date.");
+      return;
+    }
+
     setIsSaving(true);
     setFormError(null);
 
@@ -194,6 +243,7 @@ export default function EmployeesPage() {
         name: name.trim(),
         daily_salary: parsedSalary.toFixed(2),
         payment_method: paymentMethod,
+        accounting_start_date: accountingStartDate,
       });
 
       setEmployees((current) => [...current, employee]);
@@ -219,12 +269,130 @@ export default function EmployeesPage() {
     }
   }
 
+  /* ------------------------------------------------------------------------ */
+  /* Edit employee                                                            */
+  /* ------------------------------------------------------------------------ */
+
+  function openEditForm(employee: Employee) {
+    setEditingEmployee(employee);
+    setEditName(employee.name);
+    setEditDailySalary(employee.daily_salary);
+    setEditPaymentMethod(employee.payment_method);
+
+    /*
+     * Default the salary-history effective date to the local current date.
+     * This date is only sent to the backend when salary/payment method changes.
+     */
+    setEditSalaryEffectiveFrom(getLocalDateString());
+
+    setEditFormError(null);
+    setIsEditFormOpen(true);
+  }
+
+  function closeEditForm() {
+    if (isEditSaving) {
+      return;
+    }
+
+    setIsEditFormOpen(false);
+    setEditingEmployee(null);
+    setEditFormError(null);
+  }
+
+  async function handleEditSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!businessId || !editingEmployee) {
+      setEditFormError("No employee is selected.");
+      return;
+    }
+
+    const parsedSalary = Number(editDailySalary);
+
+    if (!editName.trim()) {
+      setEditFormError("Enter the employee's name.");
+      return;
+    }
+
+    if (!Number.isFinite(parsedSalary) || parsedSalary <= 0) {
+      setEditFormError("Enter a daily salary greater than zero.");
+      return;
+    }
+
+    const salaryChanged =
+      editDailySalary !== editingEmployee.daily_salary ||
+      editPaymentMethod !== editingEmployee.payment_method;
+
+    if (salaryChanged && !editSalaryEffectiveFrom) {
+      setEditFormError("Select the salary effective date.");
+      return;
+    }
+
+    setIsEditSaving(true);
+    setEditFormError(null);
+
+    try {
+      const updatedEmployee = await sdk.employees.update(
+        businessId,
+        editingEmployee.id,
+        {
+          name: editName.trim(),
+          daily_salary: parsedSalary.toFixed(2),
+          payment_method: editPaymentMethod,
+          ...(salaryChanged
+            ? {
+                salary_effective_from: editSalaryEffectiveFrom,
+              }
+            : {}),
+        },
+      );
+
+      setEmployees((current) =>
+        current.map((employee) =>
+          employee.id === updatedEmployee.id
+            ? updatedEmployee
+            : employee,
+        ),
+      );
+
+      setIsEditFormOpen(false);
+      setEditingEmployee(null);
+      setEditFormError(null);
+    } catch (err) {
+      const status = getErrorStatus(err);
+
+      if (status === 401) {
+        setEditFormError(
+          "Your session has expired. Please sign in again.",
+        );
+      } else if (status === 422) {
+        setEditFormError("Please check the employee details.");
+      } else {
+        setEditFormError(
+          err instanceof Error
+            ? err.message
+            : "Unable to update the employee.",
+        );
+      }
+    } finally {
+      setIsEditSaving(false);
+    }
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Sign out                                                                 */
+  /* ------------------------------------------------------------------------ */
+
   function handleSignOut() {
     localStorage.removeItem("access_token");
     localStorage.removeItem("refresh_token");
     localStorage.removeItem("business_id");
     router.replace("/login");
   }
+
+  /* ------------------------------------------------------------------------ */
+  /* UI                                                                       */
+  /* ------------------------------------------------------------------------ */
 
   return (
     <main
@@ -380,13 +548,9 @@ export default function EmployeesPage() {
             }}
           >
             {employees.map((employee, index) => (
-              <button
+              <div
                 key={employee.id}
-                type="button"
-                onClick={() =>
-                  router.push(`/employees/${employee.id}`)
-                }
-                className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left transition-opacity hover:opacity-80"
+                className="flex w-full items-center justify-between gap-3 px-4 py-4"
                 style={{
                   borderTop:
                     index === 0
@@ -395,7 +559,13 @@ export default function EmployeesPage() {
                   opacity: employee.is_active ? 1 : 0.55,
                 }}
               >
-                <div className="min-w-0">
+                <button
+                  type="button"
+                  onClick={() =>
+                    router.push(`/employees/${employee.id}`)
+                  }
+                  className="min-w-0 flex-1 text-left transition-opacity hover:opacity-80"
+                >
                   <div className="flex items-center gap-2">
                     <p
                       className="truncate text-sm font-semibold"
@@ -423,9 +593,9 @@ export default function EmployeesPage() {
                   >
                     RM {formatMoney(employee.daily_salary)} / day
                   </p>
-                </div>
+                </button>
 
-                <div className="flex shrink-0 items-center gap-3">
+                <div className="flex shrink-0 items-center gap-2">
                   <span
                     className="rounded-full px-2.5 py-1 text-[10px] font-semibold capitalize"
                     style={{
@@ -436,6 +606,19 @@ export default function EmployeesPage() {
                     {employee.payment_method}
                   </span>
 
+                  <button
+                    type="button"
+                    onClick={() => openEditForm(employee)}
+                    aria-label={`Edit ${employee.name}`}
+                    className="flex h-10 w-10 items-center justify-center rounded-md border text-base transition-opacity hover:opacity-80"
+                    style={{
+                      borderColor: colors.border,
+                      color: colors.secondary,
+                    }}
+                  >
+                    ⚙
+                  </button>
+
                   <span
                     className="text-lg"
                     style={{ color: colors.muted }}
@@ -443,7 +626,7 @@ export default function EmployeesPage() {
                     ›
                   </span>
                 </div>
-              </button>
+              </div>
             ))}
           </section>
         )}
@@ -453,7 +636,7 @@ export default function EmployeesPage() {
         type="button"
         onClick={openAddForm}
         aria-label="Add employee"
-        className="fixed bottom-20 right-5 flex h-14 w-14 items-center justify-center rounded-full text-2xl font-semibold shadow-lg transition-opacity hover:opacity-90 active:scale-[0.96] sm:right-8"
+        className="fixed bottom-20 right-5 flex h-14 w-14 items-center justify-center rounded-full text-2xl font-semibold shadow-lg transition-opacity hover:opacity-90 active:scale-[0.96] sm:right-8 "
         style={{
           backgroundColor: colors.accent,
           color: colors.text,
@@ -463,7 +646,7 @@ export default function EmployeesPage() {
       </button>
 
       <nav
-        className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t"
+        className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t md:hidden"
         style={{
           backgroundColor: colors.surface,
           borderColor: colors.border,
@@ -485,6 +668,220 @@ export default function EmployeesPage() {
           </a>
         ))}
       </nav>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Edit employee modal                                                */}
+      {/* ------------------------------------------------------------------ */}
+
+      {isEditFormOpen && editingEmployee && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4"
+          style={{ backgroundColor: "rgba(11,15,20,0.7)" }}
+        >
+          <div
+            className="max-h-[92vh] w-full overflow-y-auto rounded-t-lg p-5 shadow-2xl sm:max-w-md sm:rounded-lg sm:p-6"
+            style={{
+              backgroundColor: colors.surface,
+              border: `1px solid ${colors.border}`,
+            }}
+          >
+            <div className="mb-6 flex items-start justify-between gap-4">
+              <div>
+                <h2
+                  className="text-xl font-bold"
+                  style={{ color: colors.text }}
+                >
+                  Edit employee
+                </h2>
+
+                <p
+                  className="mt-1 text-sm"
+                  style={{ color: colors.secondary }}
+                >
+                  Update {editingEmployee.name}&apos;s employee details.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeEditForm}
+                className="flex h-10 w-10 items-center justify-center rounded-md text-xl"
+                style={{ color: colors.secondary }}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+
+            <form
+              onSubmit={handleEditSubmit}
+              className="space-y-5"
+            >
+              <label className="block">
+                <span
+                  className="mb-2 block text-sm font-semibold"
+                  style={{ color: colors.text }}
+                >
+                  Employee name
+                </span>
+
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(event) =>
+                    setEditName(event.target.value)
+                  }
+                  maxLength={200}
+                  className="min-h-12 w-full rounded-md border px-4 text-base outline-none"
+                  style={{
+                    backgroundColor: colors.background,
+                    borderColor: colors.border,
+                    color: colors.text,
+                  }}
+                  required
+                />
+              </label>
+
+              <label className="block">
+                <span
+                  className="mb-2 block text-sm font-semibold"
+                  style={{ color: colors.text }}
+                >
+                  Daily salary
+                </span>
+
+                <div className="relative">
+                  <span
+                    className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-sm"
+                    style={{ color: colors.muted }}
+                  >
+                    RM
+                  </span>
+
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={editDailySalary}
+                    onChange={(event) =>
+                      setEditDailySalary(event.target.value)
+                    }
+                    className="min-h-12 w-full rounded-md border pl-12 pr-4 text-base outline-none"
+                    style={{
+                      backgroundColor: colors.background,
+                      borderColor: colors.border,
+                      color: colors.text,
+                    }}
+                    required
+                  />
+                </div>
+              </label>
+
+              <label className="block">
+                <span
+                  className="mb-2 block text-sm font-semibold"
+                  style={{ color: colors.text }}
+                >
+                  Payment method
+                </span>
+
+                <select
+                  value={editPaymentMethod}
+                  onChange={(event) =>
+                    setEditPaymentMethod(
+                      event.target.value as PaymentMethod,
+                    )
+                  }
+                  className="min-h-12 w-full rounded-md border px-4 text-base outline-none"
+                  style={{
+                    backgroundColor: colors.background,
+                    borderColor: colors.border,
+                    color: colors.text,
+                  }}
+                >
+                  <option value="monthly">Monthly</option>
+                  <option value="daily">Daily</option>
+                </select>
+              </label>
+
+              <label className="block">
+                <span
+                  className="mb-2 block text-sm font-semibold"
+                  style={{ color: colors.text }}
+                >
+                  Salary effective from
+                </span>
+
+                <input
+                  type="date"
+                  value={editSalaryEffectiveFrom}
+                  onChange={(event) =>
+                    setEditSalaryEffectiveFrom(event.target.value)
+                  }
+                  className="min-h-12 w-full rounded-md border px-4 text-base outline-none"
+                  style={{
+                    backgroundColor: colors.background,
+                    borderColor: colors.border,
+                    color: colors.text,
+                  }}
+                />
+
+                <p
+                  className="mt-2 text-xs leading-5"
+                  style={{ color: colors.muted }}
+                >
+                  Used when the daily salary or payment method
+                  changes. Previous salary history remains unchanged.
+                </p>
+              </label>
+
+              {editFormError && (
+                <div
+                  className="rounded-md px-4 py-3 text-sm"
+                  style={{
+                    backgroundColor: colors.errorBackground,
+                    color: colors.error,
+                  }}
+                >
+                  {editFormError}
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={closeEditForm}
+                  disabled={isEditSaving}
+                  className="min-h-12 flex-1 rounded-md border px-4 text-sm font-semibold"
+                  style={{
+                    borderColor: colors.border,
+                    color: colors.text,
+                  }}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isEditSaving}
+                  className="min-h-12 flex-1 rounded-md px-4 text-sm font-semibold disabled:opacity-50"
+                  style={{
+                    backgroundColor: colors.accent,
+                    color: colors.text,
+                  }}
+                >
+                  {isEditSaving ? "Saving..." : "Save changes"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Add employee modal                                                  */}
+      {/* ------------------------------------------------------------------ */}
 
       {isFormOpen && (
         <div
@@ -526,7 +923,10 @@ export default function EmployeesPage() {
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-5">
+            <form
+              onSubmit={handleSubmit}
+              className="space-y-5"
+            >
               <label className="block">
                 <span
                   className="mb-2 block text-sm font-semibold"
@@ -615,6 +1015,38 @@ export default function EmployeesPage() {
                   <option value="monthly">Monthly</option>
                   <option value="daily">Daily</option>
                 </select>
+              </label>
+
+              <label className="block">
+                <span
+                  className="mb-2 block text-sm font-semibold"
+                  style={{ color: colors.text }}
+                >
+                  Accounting start date
+                </span>
+
+                <input
+                  type="date"
+                  value={accountingStartDate}
+                  onChange={(event) =>
+                    setAccountingStartDate(event.target.value)
+                  }
+                  className="min-h-12 w-full rounded-md border px-4 text-base outline-none"
+                  style={{
+                    backgroundColor: colors.background,
+                    borderColor: colors.border,
+                    color: colors.text,
+                  }}
+                  required
+                />
+
+                <p
+                  className="mt-2 text-xs leading-5"
+                  style={{ color: colors.muted }}
+                >
+                  The date from which this employee&apos;s
+                  bookkeeping records begin.
+                </p>
               </label>
 
               {formError && (

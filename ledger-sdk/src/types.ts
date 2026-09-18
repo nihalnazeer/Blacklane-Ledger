@@ -16,6 +16,10 @@ export type ExpenseType = "general" | "utility" | "other";
 
 export type PaymentMethod = "daily" | "monthly";
 
+export type EmployeeShift = "day" | "night";
+
+export type EmployeeAttendanceStatus = "present" | "leave";
+
 export type EmployeeFinancialEventType =
   | "advance"
   | "overtime"
@@ -39,6 +43,13 @@ export interface User {
 export interface LoginRequest {
   email: string;
   password: string;
+}
+
+export interface SignupRequest {
+  email: string;
+  password: string;
+  business_name: string;
+  business_type: BusinessType;
 }
 
 export interface TokenResponse {
@@ -86,7 +97,7 @@ export interface Sale {
   business_id: string;
   sale_date: string;
   cash_income: string;
-  bank_balance: string;
+  atm_topup: string;
   created_at: string;
   updated_at: string;
 }
@@ -94,13 +105,13 @@ export interface Sale {
 export interface SaleCreate {
   sale_date: string;
   cash_income: string;
-  bank_balance: string;
+  atm_topup?: string;
 }
 
 export interface SaleUpdate {
   sale_date?: string;
   cash_income?: string;
-  bank_balance?: string;
+  atm_topup?: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -158,6 +169,7 @@ export interface Employee {
   name: string;
   daily_salary: string;
   payment_method: PaymentMethod;
+  accounting_start_date: string;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -167,6 +179,7 @@ export interface EmployeeCreate {
   name: string;
   daily_salary: string;
   payment_method?: PaymentMethod;
+  accounting_start_date: string;
 }
 
 export interface EmployeeUpdate {
@@ -175,6 +188,7 @@ export interface EmployeeUpdate {
   payment_method?: PaymentMethod;
   is_active?: boolean;
   salary_effective_from?: string;
+  accounting_start_date?: string;
 }
 
 export interface EmployeeSalaryHistory {
@@ -185,6 +199,45 @@ export interface EmployeeSalaryHistory {
   payment_method: PaymentMethod;
   created_at: string;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Employee Daily Records                                                     */
+/* -------------------------------------------------------------------------- */
+
+export interface EmployeeDailyRecord {
+  id: string;
+  employee_id: string;
+  record_date: string;
+  shift: EmployeeShift;
+  status: EmployeeAttendanceStatus;
+  salary_amount: string;
+  overtime: string;
+  salary_cut: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EmployeeDailyRecordCreate {
+  record_date: string;
+  shift?: EmployeeShift;
+  status?: EmployeeAttendanceStatus;
+  salary_amount: string;
+  overtime?: string;
+  salary_cut?: string;
+}
+
+export interface EmployeeDailyRecordUpdate {
+  record_date?: string;
+  shift?: EmployeeShift;
+  status?: EmployeeAttendanceStatus;
+  salary_amount?: string;
+  overtime?: string;
+  salary_cut?: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Employee Financial Events                                                  */
+/* -------------------------------------------------------------------------- */
 
 export interface EmployeeFinancialEvent {
   id: string;
@@ -214,6 +267,10 @@ export interface EmployeeFinancialEventUpdate {
   note?: string | null;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Employee Notes                                                             */
+/* -------------------------------------------------------------------------- */
+
 export interface EmployeeNote {
   id: string;
   employee_id: string;
@@ -236,22 +293,40 @@ export interface EmployeeNoteUpdate {
   content?: string;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Employee Balance                                                           */
+/* -------------------------------------------------------------------------- */
+
 export interface EmployeeBalance {
   employee_id: string;
   balance: string;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Employee Daily Summary                                                     */
+/* -------------------------------------------------------------------------- */
+
 export interface EmployeeDailySummary {
   date: string;
+
   salary_earned: string;
   overtime: string;
+  salary_cut: string;
+
   leave_no_salary: string;
   payments: string;
   advances: string;
   debt_offsets: string;
+
   balance: string;
+
+  has_record: boolean;
   has_events: boolean;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Employee Calendar                                                          */
+/* -------------------------------------------------------------------------- */
 
 export interface EmployeeCalendar {
   employee: Employee;
@@ -259,17 +334,29 @@ export interface EmployeeCalendar {
   days: EmployeeDailySummary[];
 }
 
+/* -------------------------------------------------------------------------- */
+/* Employee Ledger                                                            */
+/* -------------------------------------------------------------------------- */
+
 export interface EmployeeLedger {
   employee: Employee;
   date: string;
+
   daily_salary: string;
+
+  daily_records: EmployeeDailyRecord[];
+
   salary_earned: string;
   overtime: string;
+  salary_cut: string;
+
   leave_no_salary: string;
   payments: string;
   advances: string;
   debt_offsets: string;
+
   balance: string;
+
   events: EmployeeFinancialEvent[];
   notes: EmployeeNote[];
 }
@@ -346,6 +433,20 @@ export interface ReportDaily {
   balance: string;
 }
 
+export interface DailyClosingCreate {
+  note?: string | null;
+}
+
+export interface DailyClosing {
+  id: string;
+  business_id: string;
+  report_date: string;
+  accounting_fingerprint: string;
+  note: string | null;
+  is_closed: boolean;
+  closed_at: string | null;
+}
+
 export interface MonthlyClosingCreate {
   bank_balance: string;
   closing_expense: string;
@@ -401,6 +502,14 @@ export interface DashboardMonthToDate {
   balance: string;
 }
 
+export interface DashboardAverages {
+  cash_sales: string;
+  total_expenses: string;
+  employee_salary: string;
+  overtime: string;
+  balance: string;
+}
+
 export interface DashboardEmployees {
   count: number;
 }
@@ -414,6 +523,7 @@ export interface Dashboard {
 
   today: DashboardToday;
   month_to_date: DashboardMonthToDate;
+  averages: DashboardAverages;
   employees: DashboardEmployees;
   month_status: DashboardMonthStatus;
 }

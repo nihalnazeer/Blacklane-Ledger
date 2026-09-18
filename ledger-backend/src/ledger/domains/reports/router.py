@@ -2,12 +2,14 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ledger.db.session import get_db_session
 from ledger.domains.auth.dependencies import get_current_user
 from ledger.domains.reports.schemas import (
+    DailyClosingCreate,
+    DailyClosingResponse,
     MonthlyClosingCreate,
     MonthlyClosingResponse,
     MonthlyClosingUpdate,
@@ -16,7 +18,9 @@ from ledger.domains.reports.schemas import (
     ReportYearResponse,
 )
 from ledger.domains.reports.service import (
+    create_or_reclose_daily_closing,
     create_monthly_closing,
+    get_daily_closing,
     get_daily_report,
     get_monthly_closing,
     get_monthly_report,
@@ -124,7 +128,8 @@ async def get_report_month(
         le=12,
     ),
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session,
+    ),
 ) -> ReportMonthlyResponse:
     await require_restaurant_access(
         business_id,
@@ -164,6 +169,62 @@ async def get_report_day(
 
 
 @router.get(
+    "/daily/{report_date}/closing",
+    response_model=DailyClosingResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_daily_report_closing(
+    business_id: uuid.UUID,
+    report_date: date,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    await require_restaurant_access(
+        business_id,
+        current_user,
+        session,
+    )
+
+    closing = await get_daily_closing(
+        session,
+        business_id,
+        report_date,
+    )
+
+    if closing is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    return DailyClosingResponse.model_validate(closing)
+
+
+@router.post(
+    "/daily/{report_date}/closing",
+    response_model=DailyClosingResponse,
+)
+async def close_daily_report(
+    business_id: uuid.UUID,
+    report_date: date,
+    data: DailyClosingCreate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> DailyClosingResponse:
+    await require_restaurant_access(
+        business_id,
+        current_user,
+        session,
+    )
+
+    closing = await create_or_reclose_daily_closing(
+        session,
+        business_id,
+        report_date,
+        data.note,
+    )
+
+    return DailyClosingResponse.model_validate(closing)
+
+
+@router.get(
     "/monthly/{year}/{month}/closing",
     response_model=MonthlyClosingResponse,
 )
@@ -172,7 +233,8 @@ async def get_closing(
     year: int,
     month: int,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session,
+    ),
 ) -> MonthlyClosingResponse:
     await require_restaurant_access(
         business_id,

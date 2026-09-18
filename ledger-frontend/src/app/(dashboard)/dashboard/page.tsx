@@ -60,14 +60,14 @@ export default function DashboardPage() {
         }
 
         const [dashboardData, currentUser, businesses] = await Promise.all([
-  sdk.dashboard.get(businessId),
-  sdk.auth.me(),
-  sdk.businesses.mine(),
-]);
+          sdk.dashboard.get(businessId),
+          sdk.auth.me(),
+          sdk.businesses.mine(),
+        ]);
 
-const business = businesses.find(
-  (item) => item.id === businessId,
-);
+        const business = businesses.find(
+          (item) => item.id === businessId,
+        );
 
         if (!mounted) return;
 
@@ -166,7 +166,10 @@ const business = businesses.find(
     >
       <div className="mx-auto w-full max-w-3xl">
         <header>
-          <p className="text-sm font-medium" style={{ color: colors.secondary }}>
+          <p
+            className="text-sm font-medium"
+            style={{ color: colors.secondary }}
+          >
             {formatDate(dashboard.date)}
           </p>
 
@@ -189,13 +192,18 @@ const business = businesses.find(
           >
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-sm font-medium" style={{ color: colors.secondary }}>
+                <p
+                  className="text-sm font-medium"
+                  style={{ color: colors.secondary }}
+                >
                   Today&apos;s balance
                 </p>
                 <p
                   className="mt-2 text-4xl font-semibold tracking-tight"
                   style={{
-                    color: todayBalancePositive ? colors.accent : colors.error,
+                    color: todayBalancePositive
+                      ? colors.accent
+                      : colors.error,
                   }}
                 >
                   {formatCurrency(dashboard.today.balance)}
@@ -221,13 +229,22 @@ const business = businesses.find(
               className="mt-6 grid grid-cols-2 gap-4 border-t pt-5 sm:grid-cols-4"
               style={{ borderColor: colors.border }}
             >
-              <Metric label="Cash sales" value={formatCurrency(dashboard.today.cash_sales)} />
-              <Metric label="Expenses" value={formatCurrency(dashboard.today.total_expenses)} />
+              <Metric
+                label="Cash sales"
+                value={formatCurrency(dashboard.today.cash_sales)}
+              />
+              <Metric
+                label="Expenses"
+                value={formatCurrency(dashboard.today.total_expenses)}
+              />
               <Metric
                 label="Employee salary"
                 value={formatCurrency(dashboard.today.employee_salary)}
               />
-              <Metric label="Overtime" value={formatCurrency(dashboard.today.overtime)} />
+              <Metric
+                label="Overtime"
+                value={formatCurrency(dashboard.today.overtime)}
+              />
             </div>
           </div>
         </section>
@@ -235,7 +252,10 @@ const business = businesses.find(
         <section className="mt-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium" style={{ color: colors.secondary }}>
+              <p
+                className="text-sm font-medium"
+                style={{ color: colors.secondary }}
+              >
                 Month to date
               </p>
               <h2 className="mt-1 text-xl font-semibold">
@@ -274,7 +294,9 @@ const business = businesses.find(
             <MetricCard
               label="Cash balance"
               value={formatCurrency(dashboard.month_to_date.balance)}
-              valueColor={monthBalancePositive ? colors.accent : colors.error}
+              valueColor={
+                monthBalancePositive ? colors.accent : colors.error
+              }
             />
           </div>
         </section>
@@ -288,19 +310,30 @@ const business = businesses.find(
             }}
           >
             <div>
-              <p className="text-sm font-medium" style={{ color: colors.text }}>
+              <p
+                className="text-sm font-medium"
+                style={{ color: colors.text }}
+              >
                 Employees
               </p>
-              <p className="mt-1 text-xs" style={{ color: colors.secondary }}>
+              <p
+                className="mt-1 text-xs"
+                style={{ color: colors.secondary }}
+              >
                 Active employees
               </p>
             </div>
-            <p className="text-2xl font-semibold">{dashboard.employees.count}</p>
+            <p className="text-2xl font-semibold">
+              {dashboard.employees.count}
+            </p>
           </div>
         </section>
 
         <section className="mt-6">
-          <p className="text-sm font-medium" style={{ color: colors.secondary }}>
+          <p
+            className="text-sm font-medium"
+            style={{ color: colors.secondary }}
+          >
             Quick actions
           </p>
 
@@ -321,12 +354,18 @@ const business = businesses.find(
                 borderColor: "rgba(31, 122, 94, 0.28)",
               }}
             >
-              <p className="text-sm font-medium" style={{ color: colors.text }}>
+              <p
+                className="text-sm font-medium"
+                style={{ color: colors.text }}
+              >
                 Month is still open
               </p>
-              <p className="mt-1 text-xs leading-5" style={{ color: colors.secondary }}>
-                Continue recording your sales and expenses. Close the month when your
-                records are complete.
+              <p
+                className="mt-1 text-xs leading-5"
+                style={{ color: colors.secondary }}
+              >
+                Continue recording your sales and expenses. Close the month
+                when your records are complete.
               </p>
             </div>
           </section>
@@ -334,7 +373,7 @@ const business = businesses.find(
       </div>
 
       <nav
-        className="fixed inset-x-0 bottom-0 z-40 border-t"
+        className="fixed inset-x-0 bottom-0 z-40 border-t md:hidden"
         style={{
           backgroundColor: colors.surface,
           borderColor: colors.border,

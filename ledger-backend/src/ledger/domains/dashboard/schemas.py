@@ -28,6 +28,14 @@ class DashboardMonthToDate(BaseModel):
     balance: Decimal
 
 
+class DashboardAverages(BaseModel):
+    cash_sales: Decimal
+    total_expenses: Decimal
+    employee_salary: Decimal
+    overtime: Decimal
+    balance: Decimal
+
+
 class DashboardEmployees(BaseModel):
     count: int
 
@@ -41,5 +49,6 @@ class DashboardResponse(BaseModel):
 
     today: DashboardToday
     month_to_date: DashboardMonthToDate
+    averages: DashboardAverages
     employees: DashboardEmployees
     month_status: DashboardMonthStatus

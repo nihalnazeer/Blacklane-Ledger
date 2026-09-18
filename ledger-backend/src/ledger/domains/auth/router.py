@@ -7,12 +7,14 @@ from ledger.domains.auth.schemas import (
     CurrentUserResponse,
     LoginRequest,
     RefreshRequest,
+    SignupRequest,
     TokenResponse,
 )
 from ledger.domains.auth.security import decode_token
 from ledger.domains.auth.service import (
     authenticate_user,
     refresh_access_token,
+    signup_user,
 )
 from ledger.domains.users.service import get_user_by_id
 
@@ -29,6 +31,18 @@ async def login(
     session: AsyncSession = Depends(get_db_session),
 ) -> TokenResponse:
     return await authenticate_user(session, credentials)
+
+
+@router.post(
+    "/signup",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def signup(
+    credentials: SignupRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> TokenResponse:
+    return await signup_user(session, credentials)
 
 
 @router.post("/refresh", response_model=TokenResponse)

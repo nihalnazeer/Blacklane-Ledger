@@ -903,7 +903,7 @@ export default function ExpensesPage() {
 
       {/* Bottom navigation */}
       <nav
-        className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t"
+        className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t md:hidden"
         style={{
           backgroundColor: colors.surface,
           borderColor: colors.border,

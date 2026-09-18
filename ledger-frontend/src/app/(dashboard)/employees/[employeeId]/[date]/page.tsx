@@ -1,70 +1,84 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   Employee,
+  EmployeeDailyRecord,
+  EmployeeDailyRecordCreate,
+  EmployeeDailyRecordUpdate,
   EmployeeFinancialEvent,
   EmployeeFinancialEventCreate,
-  EmployeeFinancialEventType,
-  EmployeeFinancialEventUpdate,
   EmployeeNote,
 } from "@blacklane-ledger/sdk";
 import { sdk } from "@/lib/api";
 
-const EVENT_TYPES: EmployeeFinancialEventType[] = [
-  "overtime",
-  "advance",
-  "payment",
-  "debt_offset",
-  "leave_no_salary",
-];
+/* -------------------------------------------------------------------------- */
+/* Types                                                                      */
+/* -------------------------------------------------------------------------- */
+
+const SHIFT_OPTIONS = ["day", "night"] as const;
+type Shift = (typeof SHIFT_OPTIONS)[number];
+
+type AttendanceStatus = "present" | "leave";
 
 type Ledger = Awaited<ReturnType<typeof sdk.employees.ledger>>;
 
-const EVENT_LABELS: Record<EmployeeFinancialEventType, string> = {
-  overtime: "Overtime",
-  advance: "Advance",
-  payment: "Payment",
-  debt_offset: "Debt Offset",
-  leave_no_salary: "No Salary",
+/* -------------------------------------------------------------------------- */
+/* Theme                                                                      */
+/* -------------------------------------------------------------------------- */
+
+const colors = {
+  background: "#0B0F14",
+  surface: "#1F2937",
+  border: "rgba(156, 163, 175, 0.16)",
+  text: "#FAFAFA",
+  secondary: "#9CA3AF",
+  muted: "#6B7280",
+  accent: "#1F7A5C",
+  accentSoft: "rgba(31, 122, 94, 0.16)",
+  error: "#E08A6E",
+  errorBackground: "rgba(224, 138, 110, 0.12)",
 };
 
-const EVENT_DESCRIPTIONS: Record<EmployeeFinancialEventType, string> = {
-  overtime: "Additional earnings",
-  advance: "Advance paid to employee",
-  payment: "Salary payment",
-  debt_offset: "Debt offset",
-  leave_no_salary: "Leave without salary",
-};
+/* -------------------------------------------------------------------------- */
+/* Helpers                                                                    */
+/* -------------------------------------------------------------------------- */
+
+function getLocalDateString(date: Date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function addDays(dateString: string, amount: number) {
+  const [year, month, day] = dateString.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + amount);
+
+  return getLocalDateString(date);
+}
+
+function isFutureDate(dateString: string) {
+  return dateString > getLocalDateString();
+}
 
 function formatMoney(value: string | number | null | undefined) {
   const amount = Number(value ?? 0);
 
-  return new Intl.NumberFormat("en-IN", {
+  return new Intl.NumberFormat("en-MY", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Math.abs(amount));
 }
 
-function formatSignedMoney(
-  value: string | number | null | undefined,
-) {
-  const amount = Number(value ?? 0);
-
-  if (amount === 0) {
-    return "0.00";
-  }
-
-  return `${amount > 0 ? "+" : "-"}${formatMoney(amount)}`;
-}
-
 function formatDate(dateString: string) {
   const [year, month, day] = dateString.split("-").map(Number);
-
   const date = new Date(year, month - 1, day);
 
-  return new Intl.DateTimeFormat("en-IN", {
+  return new Intl.DateTimeFormat("en-MY", {
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -74,64 +88,13 @@ function formatDate(dateString: string) {
 
 function formatShortDate(dateString: string) {
   const [year, month, day] = dateString.split("-").map(Number);
-
   const date = new Date(year, month - 1, day);
 
-  return new Intl.DateTimeFormat("en-IN", {
+  return new Intl.DateTimeFormat("en-MY", {
     day: "numeric",
     month: "short",
     year: "numeric",
   }).format(date);
-}
-
-function addDays(dateString: string, amount: number) {
-  const [year, month, day] = dateString.split("-").map(Number);
-
-  const date = new Date(year, month - 1, day);
-  date.setDate(date.getDate() + amount);
-
-  const nextYear = date.getFullYear();
-  const nextMonth = String(date.getMonth() + 1).padStart(2, "0");
-  const nextDay = String(date.getDate()).padStart(2, "0");
-
-  return `${nextYear}-${nextMonth}-${nextDay}`;
-}
-
-function isFutureDate(dateString: string) {
-  const today = new Date();
-
-  const todayString = [
-    today.getFullYear(),
-    String(today.getMonth() + 1).padStart(2, "0"),
-    String(today.getDate()).padStart(2, "0"),
-  ].join("-");
-
-  return dateString > todayString;
-}
-
-function getEventAmountSign(type: EmployeeFinancialEventType) {
-  if (type === "overtime") {
-    return "positive";
-  }
-
-  return "negative";
-}
-
-function getEventLabel(type: string) {
-  return (
-    EVENT_LABELS[type as EmployeeFinancialEventType] ??
-    type.replaceAll("_", " ")
-  );
-}
-
-function getEventAmountColor(type: EmployeeFinancialEventType) {
-  return type === "overtime"
-    ? "text-emerald-400"
-    : "text-zinc-300";
-}
-
-function getEventPrefix(type: EmployeeFinancialEventType) {
-  return getEventAmountSign(type) === "positive" ? "+" : "-";
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -142,82 +105,103 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
+function getSettlementDate(targetDate: string, shift: Shift) {
+  return shift === "night" ? addDays(targetDate, 1) : targetDate;
+}
+
+function getSettlementNote(targetDate: string) {
+  return `Settlement for employee balance through ${formatShortDate(targetDate)}.`;
+}
+
+function getLatestSettlementEvent(
+  events: EmployeeFinancialEvent[],
+  targetDate: string,
+) {
+  const note = getSettlementNote(targetDate);
+
+  return (
+    events
+      .filter(
+        (event) =>
+          event.event_type === "payment" &&
+          event.description === "Employee salary settlement" &&
+          event.note === note,
+      )
+      .sort((a, b) => {
+        const aTime = a.created_at
+          ? new Date(a.created_at).getTime()
+          : 0;
+        const bTime = b.created_at
+          ? new Date(b.created_at).getTime()
+          : 0;
+
+        return bTime - aTime;
+      })[0] ?? null
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Page                                                                       */
+/* -------------------------------------------------------------------------- */
+
 export default function EmployeeDatePage() {
   const router = useRouter();
   const params = useParams();
 
   const employeeId =
-    typeof params.employeeId === "string"
-      ? params.employeeId
-      : null;
+    typeof params.employeeId === "string" ? params.employeeId : null;
 
   const dateParam =
-    typeof params.date === "string"
-      ? params.date
-      : null;
+    typeof params.date === "string" ? params.date : null;
+
+  const targetDate = dateParam ?? "";
 
   const [businessId, setBusinessId] = useState<string | null>(null);
   const [employee, setEmployee] = useState<Employee | null>(null);
   const [ledger, setLedger] = useState<Ledger | null>(null);
+  const [allEvents, setAllEvents] = useState<EmployeeFinancialEvent[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [settling, setSettling] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [showEventModal, setShowEventModal] = useState(false);
-  const [editingEvent, setEditingEvent] =
-    useState<EmployeeFinancialEvent | null>(null);
+  /* ------------------------------------------------------------------------ */
+  /* Daily form                                                               */
+  /* ------------------------------------------------------------------------ */
 
-  const [eventType, setEventType] =
-    useState<EmployeeFinancialEventType>("advance");
-  const [eventAmount, setEventAmount] = useState("");
-  const [eventDescription, setEventDescription] = useState("");
-  const [eventNote, setEventNote] = useState("");
+  const [selectedShift, setSelectedShift] = useState<Shift>("day");
+  const [attendanceStatus, setAttendanceStatus] =
+    useState<AttendanceStatus>("present");
+  const [salaryAmount, setSalaryAmount] = useState("");
+  const [overtime, setOvertime] = useState("");
+  const [salaryCut, setSalaryCut] = useState("");
 
+  /* ------------------------------------------------------------------------ */
+  /* Modals                                                                   */
+  /* ------------------------------------------------------------------------ */
+
+  const [showSettlementModal, setShowSettlementModal] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
+
   const [noteTitle, setNoteTitle] = useState("");
   const [noteContent, setNoteContent] = useState("");
   const [savingNote, setSavingNote] = useState(false);
 
-  const targetDate = dateParam ?? "";
+  /* ------------------------------------------------------------------------ */
+  /* Load business ID                                                         */
+  /* ------------------------------------------------------------------------ */
 
-  const todayString = useMemo(() => {
-    const today = new Date();
-
-    return [
-      today.getFullYear(),
-      String(today.getMonth() + 1).padStart(2, "0"),
-      String(today.getDate()).padStart(2, "0"),
-    ].join("-");
+  useEffect(() => {
+    const storedBusinessId = window.localStorage.getItem("business_id");
+    setBusinessId(storedBusinessId);
   }, []);
 
-  const previousDate = useMemo(() => {
-    if (!targetDate) {
-      return "";
-    }
+  /* ------------------------------------------------------------------------ */
+  /* Load ledger and payment history                                          */
+  /* ------------------------------------------------------------------------ */
 
-    return addDays(targetDate, -1);
-  }, [targetDate]);
-
-  const nextDate = useMemo(() => {
-    if (!targetDate) {
-      return "";
-    }
-
-    return addDays(targetDate, 1);
-  }, [targetDate]);
-
-  const nextDisabled =
-    !nextDate || nextDate > todayString;
-
-  const previousDisabled =
-    !previousDate ||
-    Boolean(
-      employee?.created_at &&
-        previousDate < employee.created_at.slice(0, 10),
-    );
-
-  const loadLedger = useCallback(async () => {
+  async function loadLedger() {
     if (!businessId || !employeeId || !targetDate) {
       return;
     }
@@ -226,88 +210,189 @@ export default function EmployeeDatePage() {
     setError(null);
 
     try {
-      const [employeeResult, ledgerResult] =
-        await Promise.all([
-          sdk.employees.get(
-            businessId,
-            employeeId,
-          ),
-          sdk.employees.ledger(
-            businessId,
-            employeeId,
-            targetDate,
-          ),
-        ]);
+      const [employeeResult, ledgerResult, eventsResult] = await Promise.all([
+        sdk.employees.get(businessId, employeeId),
+        sdk.employees.ledger(businessId, employeeId, targetDate),
+        sdk.employees.listEvents(businessId, employeeId),
+      ]);
 
       setEmployee(employeeResult);
       setLedger(ledgerResult);
+      setAllEvents(eventsResult);
     } catch (err) {
-      console.error(
-        "Failed to load employee date ledger:",
-        err,
-      );
+      console.error("Failed to load employee date ledger:", err);
 
       setError(
-        getErrorMessage(
-          err,
-          "Failed to load this employee date.",
-        ),
+        getErrorMessage(err, "Failed to load this employee date."),
       );
     } finally {
       setLoading(false);
     }
-  }, [
-    businessId,
-    employeeId,
-    targetDate,
-  ]);
+  }
 
   useEffect(() => {
-    const storedBusinessId =
-      window.localStorage.getItem("business_id");
-
-    setBusinessId(storedBusinessId);
-  }, []);
-
-  useEffect(() => {
-    if (
-      !targetDate ||
-      isFutureDate(targetDate)
-    ) {
-      if (targetDate) {
-        router.replace(
-          `/employees/${employeeId ?? ""}`,
-        );
-      }
-
+    if (!targetDate) {
       return;
     }
 
-    loadLedger();
-  }, [
-    targetDate,
-    employeeId,
-    router,
-    loadLedger,
-  ]);
-
-  const events = useMemo(() => {
-    if (!ledger?.events) {
-      return [];
+    if (isFutureDate(targetDate)) {
+      router.replace(`/employees/${employeeId ?? ""}`);
+      return;
     }
 
-    return [...ledger.events].sort((a, b) => {
-      const aTime = a.created_at
-        ? new Date(a.created_at).getTime()
-        : 0;
+    void loadLedger();
+  }, [businessId, employeeId, targetDate, router]);
 
-      const bTime = b.created_at
-        ? new Date(b.created_at).getTime()
-        : 0;
+  /* ------------------------------------------------------------------------ */
+  /* Date validation                                                          */
+  /* ------------------------------------------------------------------------ */
 
-      return bTime - aTime;
-    });
-  }, [ledger]);
+  useEffect(() => {
+    if (
+      employee?.accounting_start_date &&
+      targetDate &&
+      targetDate < employee.accounting_start_date
+    ) {
+      router.replace(`/employees/${employeeId ?? ""}`);
+    }
+  }, [employee?.accounting_start_date, targetDate, employeeId, router]);
+
+  /* ------------------------------------------------------------------------ */
+  /* Daily record                                                             */
+  /* ------------------------------------------------------------------------ */
+
+  const dailyRecords = useMemo(
+    () => [...(ledger?.daily_records ?? [])],
+    [ledger?.daily_records],
+  );
+
+  /*
+   * There is intentionally only one daily employee transaction for a date.
+   * The shift is a field on that record, not a second transaction.
+   *
+   * If legacy data contains more than one record, the first record is used
+   * for editing so this page never creates another record for the date.
+   */
+  const selectedRecord = dailyRecords[0] ?? null;
+
+  /* ------------------------------------------------------------------------ */
+  /* Populate the single daily record                                         */
+  /* ------------------------------------------------------------------------ */
+
+  useEffect(() => {
+    const record = dailyRecords[0] ?? null;
+
+    if (!record) {
+      setSelectedShift("day");
+      setAttendanceStatus("present");
+      setSalaryAmount(
+        ledger?.daily_salary != null ? String(ledger.daily_salary) : "",
+      );
+      setOvertime("0");
+      setSalaryCut("0");
+      return;
+    }
+
+    setSelectedShift(record.shift);
+    setAttendanceStatus(record.status);
+    setSalaryAmount(String(record.salary_amount ?? 0));
+    setOvertime(String(record.overtime ?? 0));
+    setSalaryCut(String(record.salary_cut ?? 0));
+  }, [dailyRecords, ledger?.daily_salary]);
+
+  /* ------------------------------------------------------------------------ */
+  /* Ledger values                                                            */
+  /* ------------------------------------------------------------------------ */
+
+  const balance = Number(ledger?.balance ?? 0);
+  /* ------------------------------------------------------------------------ */
+  /* Today's form calculation                                                 */
+  /* ------------------------------------------------------------------------ */
+
+  const currentSalary =
+    attendanceStatus === "present" ? Number(salaryAmount || 0) : 0;
+
+  const currentOvertime =
+    attendanceStatus === "present" ? Number(overtime || 0) : 0;
+
+  const currentSalaryCut =
+    attendanceStatus === "present" ? Number(salaryCut || 0) : 0;
+
+  const todayEarning =
+    currentSalary + currentOvertime - currentSalaryCut;
+
+  /* ------------------------------------------------------------------------ */
+  /* Settlement state                                                          */
+  /* ------------------------------------------------------------------------ */
+
+  const settlementDate = getSettlementDate(targetDate, selectedShift);
+  const settlementEvent = useMemo(
+    () => getLatestSettlementEvent(allEvents, targetDate),
+    [allEvents, targetDate],
+  );
+
+  const settlementAlreadyRecorded = Boolean(settlementEvent);
+
+  const savedRecordEarning = selectedRecord
+    ? selectedRecord.status === "present"
+      ? Number(selectedRecord.salary_amount ?? 0) +
+        Number(selectedRecord.overtime ?? 0) -
+        Number(selectedRecord.salary_cut ?? 0)
+      : 0
+    : 0;
+
+  /*
+   * ledger.balance includes the saved daily record when it exists.
+   * Replace that saved earning with the current form value so edits are
+   * reflected immediately in the amount shown for settlement.
+   */
+  const projectedBalance =
+    balance - savedRecordEarning + todayEarning;
+
+  const existingSettlementAmount = settlementEvent
+    ? Math.abs(Number(settlementEvent.amount ?? 0))
+    : 0;
+
+  /*
+   * For a day-shift settlement, the payment date is the selected date, so
+   * ledger.balance already includes the existing payment. Add that payment
+   * back when calculating the amount that an edited settlement should hold.
+   *
+   * For a night shift, the payment date is tomorrow, so the selected-date
+   * ledger does not include that future payment and projectedBalance already
+   * represents the full amount to settle.
+   */
+  const settlementAmount = Math.max(
+    settlementAlreadyRecorded && settlementDate <= targetDate
+      ? projectedBalance + existingSettlementAmount
+      : projectedBalance,
+    0,
+  );
+
+  /* ------------------------------------------------------------------------ */
+  /* Payment summary                                                          */
+  /* ------------------------------------------------------------------------ */
+
+  const outstandingAfterRecordedPayment = settlementAlreadyRecorded
+    ? Math.max(
+        settlementDate > targetDate
+          ? projectedBalance - existingSettlementAmount
+          : projectedBalance,
+        0,
+      )
+    : Math.max(projectedBalance, 0);
+
+  const paymentStatusText = settlementAlreadyRecorded
+    ? "Settled"
+    : "Not settled";
+
+  const paymentStatusColor = settlementAlreadyRecorded
+    ? "#7DD3A8"
+    : colors.secondary;
+
+  /* ------------------------------------------------------------------------ */
+  /* Notes                                                                     */
+  /* ------------------------------------------------------------------------ */
 
   const notes = useMemo(() => {
     if (!ledger?.notes) {
@@ -315,111 +400,231 @@ export default function EmployeeDatePage() {
     }
 
     return [...ledger.notes].sort((a, b) => {
-      const aTime = a.created_at
-        ? new Date(a.created_at).getTime()
-        : 0;
-
-      const bTime = b.created_at
-        ? new Date(b.created_at).getTime()
-        : 0;
+      const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
 
       return bTime - aTime;
     });
-  }, [ledger]);
+  }, [ledger?.notes]);
 
-  const openCreateEvent = (
-    type: EmployeeFinancialEventType = "advance",
-  ) => {
-    setEditingEvent(null);
-    setEventType(type);
-    setEventAmount("");
-    setEventDescription("");
-    setEventNote("");
-    setShowEventModal(true);
-  };
+  /* ------------------------------------------------------------------------ */
+  /* Navigation                                                               */
+  /* ------------------------------------------------------------------------ */
 
-  const openEditEvent = (
-    event: EmployeeFinancialEvent,
-  ) => {
-    setEditingEvent(event);
-    setEventType(event.event_type);
-    setEventAmount(
-      event.event_type === "leave_no_salary"
-        ? ""
-        : String(event.amount ?? ""),
+  const previousDate = targetDate ? addDays(targetDate, -1) : "";
+  const nextDate = targetDate ? addDays(targetDate, 1) : "";
+  const todayString = getLocalDateString();
+
+  const previousDisabled =
+    !previousDate ||
+    Boolean(
+      employee?.accounting_start_date &&
+        previousDate < employee.accounting_start_date,
     );
-    setEventDescription(
-      event.description ?? "",
-    );
-    setEventNote(event.note ?? "");
-    setShowEventModal(true);
-  };
 
-  const closeEventModal = () => {
-    if (saving) {
+  const nextDisabled = !nextDate || nextDate > todayString;
+
+  function goToDate(date: string) {
+    if (!employeeId || !date || isFutureDate(date)) {
       return;
     }
 
-    setShowEventModal(false);
-    setEditingEvent(null);
-  };
+    if (
+      employee?.accounting_start_date &&
+      date < employee.accounting_start_date
+    ) {
+      return;
+    }
 
-  const saveEvent = async () => {
+    router.push(`/employees/${employeeId}/${date}`);
+  }
+
+  function goBack() {
+    if (!employeeId) {
+      router.push("/employees");
+      return;
+    }
+
+    router.push(`/employees/${employeeId}`);
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Attendance                                                               */
+  /* ------------------------------------------------------------------------ */
+
+  function selectAttendance(status: AttendanceStatus) {
+    setAttendanceStatus(status);
+
+    if (status === "leave") {
+      setSalaryAmount("0");
+      setOvertime("0");
+      setSalaryCut("0");
+      return;
+    }
+
+    if (!salaryAmount || Number(salaryAmount) === 0) {
+      setSalaryAmount(
+        ledger?.daily_salary != null ? String(ledger.daily_salary) : "",
+      );
+    }
+
+    if (!overtime) {
+      setOvertime("0");
+    }
+
+    if (!salaryCut) {
+      setSalaryCut("0");
+    }
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Save daily record without settling                                       */
+  /* ------------------------------------------------------------------------ */
+
+  async function saveWithoutSettling() {
     if (!businessId || !employeeId || !targetDate) {
       return;
     }
 
     if (
-      eventType !== "leave_no_salary" &&
-      (!eventAmount ||
-        Number(eventAmount) <= 0)
+      employee?.accounting_start_date &&
+      targetDate < employee.accounting_start_date
     ) {
       window.alert(
-        "Please enter a valid amount.",
+        "This date is before the employee's accounting start date.",
       );
       return;
     }
 
+    const salary = attendanceStatus === "leave" ? "0" : salaryAmount || "0";
+    const ot = attendanceStatus === "leave" ? "0" : overtime || "0";
+    const cut = attendanceStatus === "leave" ? "0" : salaryCut || "0";
+
+    if (Number(salary) < 0 || Number(ot) < 0 || Number(cut) < 0) {
+      window.alert("Amounts cannot be negative.");
+      return;
+    }
+
     setSaving(true);
+    setError(null);
 
     try {
-      if (editingEvent) {
-        const updateData: EmployeeFinancialEventUpdate =
-          {
-            event_date: targetDate,
-            event_type: eventType,
-            amount:
-              eventType === "leave_no_salary"
-                ? "0"
-                : eventAmount,
-            description:
-              eventDescription.trim() ||
-              getEventLabel(eventType),
-            note:
-              eventNote.trim() || null,
-          };
+      const recordData: EmployeeDailyRecordCreate = {
+        record_date: targetDate,
+        shift: selectedShift,
+        status: attendanceStatus,
+        salary_amount: salary,
+        overtime: ot,
+        salary_cut: cut,
+      };
 
-        await sdk.employees.updateEvent(
+      if (selectedRecord) {
+        const updateData: EmployeeDailyRecordUpdate = recordData;
+
+        await sdk.employees.updateDailyRecord(
           businessId,
           employeeId,
-          editingEvent.id,
+          selectedRecord.id,
           updateData,
         );
       } else {
-        const createData: EmployeeFinancialEventCreate =
-          {
-            event_date: targetDate,
-            event_type: eventType,
-            amount:
-              eventType === "leave_no_salary"
-                ? "0"
-                : eventAmount,
-            description:
-              eventDescription.trim() ||
-              getEventLabel(eventType),
-            note:
-              eventNote.trim() || null,
-          };
+        await sdk.employees.createDailyRecord(
+          businessId,
+          employeeId,
+          recordData,
+        );
+      }
+
+      await loadLedger();
+    } catch (err) {
+      console.error("Failed to save employee daily record:", err);
+
+      window.alert(
+        getErrorMessage(err, "Failed to save today's record."),
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Settlement                                                               */
+  /* ------------------------------------------------------------------------ */
+
+  function openSettlementConfirmation() {
+    if (!businessId || !employeeId || !targetDate) {
+      return;
+    }
+
+    if (settlementAmount <= 0) {
+      window.alert("There is no positive employee balance to settle.");
+      return;
+    }
+
+    setShowSettlementModal(true);
+  }
+
+  async function settleNow() {
+    if (!businessId || !employeeId || !targetDate) {
+      return;
+    }
+
+    const amount = settlementAmount;
+
+    if (amount <= 0) {
+      return;
+    }
+
+    setSettling(true);
+
+    try {
+      const salary = attendanceStatus === "leave" ? "0" : salaryAmount || "0";
+      const ot = attendanceStatus === "leave" ? "0" : overtime || "0";
+      const cut = attendanceStatus === "leave" ? "0" : salaryCut || "0";
+
+      const recordData: EmployeeDailyRecordCreate = {
+        record_date: targetDate,
+        shift: selectedShift,
+        status: attendanceStatus,
+        salary_amount: salary,
+        overtime: ot,
+        salary_cut: cut,
+      };
+
+      if (selectedRecord) {
+        const updateData: EmployeeDailyRecordUpdate = recordData;
+
+        await sdk.employees.updateDailyRecord(
+          businessId,
+          employeeId,
+          selectedRecord.id,
+          updateData,
+        );
+      } else {
+        await sdk.employees.createDailyRecord(
+          businessId,
+          employeeId,
+          recordData,
+        );
+      }
+
+      const paymentData = {
+        event_date: settlementDate,
+        event_type: "payment" as const,
+        amount: amount.toFixed(2),
+        description: "Employee salary settlement",
+        note: getSettlementNote(targetDate),
+      };
+
+      if (settlementEvent) {
+        await sdk.employees.updateEvent(
+          businessId,
+          employeeId,
+          settlementEvent.id,
+          paymentData,
+        );
+      } else {
+        const createData: EmployeeFinancialEventCreate = paymentData;
 
         await sdk.employees.createEvent(
           businessId,
@@ -428,112 +633,55 @@ export default function EmployeeDatePage() {
         );
       }
 
-      setShowEventModal(false);
-      setEditingEvent(null);
-
+      setShowSettlementModal(false);
       await loadLedger();
     } catch (err) {
-      console.error(
-        "Failed to save employee event:",
-        err,
-      );
+      console.error("Failed to settle employee balance:", err);
 
       window.alert(
-        getErrorMessage(
-          err,
-          "Failed to save event.",
-        ),
+        getErrorMessage(err, "Failed to settle employee balance."),
       );
     } finally {
-      setSaving(false);
+      setSettling(false);
     }
-  };
+  }
 
-  const deleteEvent = async (
-    event: EmployeeFinancialEvent,
-  ) => {
-    if (!businessId || !employeeId) {
-      return;
-    }
+  /* ------------------------------------------------------------------------ */
+  /* Notes                                                                     */
+  /* ------------------------------------------------------------------------ */
 
-    const confirmed = window.confirm(
-      `Delete this ${getEventLabel(
-        event.event_type,
-      ).toLowerCase()} event?`,
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
-    setSaving(true);
-
-    try {
-      await sdk.employees.deleteEvent(
-        businessId,
-        employeeId,
-        event.id,
-      );
-
-      await loadLedger();
-    } catch (err) {
-      console.error(
-        "Failed to delete employee event:",
-        err,
-      );
-
-      window.alert(
-        getErrorMessage(
-          err,
-          "Failed to delete event.",
-        ),
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const openNoteModal = () => {
+  function openNoteModal() {
     setNoteTitle("");
     setNoteContent("");
     setShowNoteModal(true);
-  };
+  }
 
-  const closeNoteModal = () => {
+  function closeNoteModal() {
     if (savingNote) {
       return;
     }
 
     setShowNoteModal(false);
-  };
+  }
 
-  const createNote = async () => {
+  async function createNote() {
     if (!businessId || !employeeId || !targetDate) {
       return;
     }
 
-    if (
-      !noteTitle.trim() ||
-      !noteContent.trim()
-    ) {
-      window.alert(
-        "Please enter a title and note.",
-      );
+    if (!noteTitle.trim() || !noteContent.trim()) {
+      window.alert("Please enter a title and note.");
       return;
     }
 
     setSavingNote(true);
 
     try {
-      await sdk.employees.createNote(
-        businessId,
-        employeeId,
-        {
-          note_date: targetDate,
-          title: noteTitle.trim(),
-          content: noteContent.trim(),
-        },
-      );
+      await sdk.employees.createNote(businessId, employeeId, {
+        note_date: targetDate,
+        title: noteTitle.trim(),
+        content: noteContent.trim(),
+      });
 
       setShowNoteModal(false);
       setNoteTitle("");
@@ -541,88 +689,82 @@ export default function EmployeeDatePage() {
 
       await loadLedger();
     } catch (err) {
-      console.error(
-        "Failed to create employee note:",
-        err,
-      );
+      console.error("Failed to create employee note:", err);
 
-      window.alert(
-        getErrorMessage(
-          err,
-          "Failed to create note.",
-        ),
-      );
+      window.alert(getErrorMessage(err, "Failed to create note."));
     } finally {
       setSavingNote(false);
     }
-  };
+  }
 
-  const goToDate = (date: string) => {
-    if (!employeeId || !date) {
-      return;
-    }
-
-    if (isFutureDate(date)) {
-      return;
-    }
-
-    if (
-      employee?.created_at &&
-      date < employee.created_at.slice(0, 10)
-    ) {
-      return;
-    }
-
-    router.push(
-      `/employees/${employeeId}/${date}`,
-    );
-  };
-
-  const goBack = () => {
-    if (!employeeId) {
-      router.push("/employees");
-      return;
-    }
-
-    router.push(
-      `/employees/${employeeId}`,
-    );
-  };
+  /* ------------------------------------------------------------------------ */
+  /* Loading                                                                   */
+  /* ------------------------------------------------------------------------ */
 
   if (loading) {
     return (
-      <main className="min-h-dvh bg-[#09090b] text-white">
-        <div className="mx-auto flex min-h-dvh max-w-6xl items-center justify-center px-4">
-          <div className="text-sm text-zinc-500">
-            Loading employee ledger...
+      <main
+        className="min-h-dvh text-white"
+        style={{ backgroundColor: colors.background }}
+      >
+        <div className="mx-auto flex min-h-dvh max-w-4xl items-center justify-center px-4">
+          <div
+            className="text-sm"
+            style={{ color: colors.muted }}
+          >
+            Loading employee...
           </div>
         </div>
       </main>
     );
   }
 
+  /* ------------------------------------------------------------------------ */
+  /* Error                                                                     */
+  /* ------------------------------------------------------------------------ */
+
   if (error || !employee || !ledger) {
     return (
-      <main className="min-h-dvh bg-[#09090b] text-white">
-        <div className="mx-auto flex min-h-dvh max-w-6xl items-center justify-center px-4">
-          <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-6 text-center">
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-zinc-800 bg-zinc-900 text-zinc-400">
+      <main
+        className="min-h-dvh text-white"
+        style={{ backgroundColor: colors.background }}
+      >
+        <div className="mx-auto flex min-h-dvh max-w-4xl items-center justify-center px-4">
+          <div
+            className="w-full max-w-md rounded-2xl border p-6 text-center"
+            style={{
+              borderColor: colors.border,
+              backgroundColor: colors.surface,
+            }}
+          >
+            <div
+              className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border"
+              style={{
+                borderColor: colors.border,
+                backgroundColor: colors.background,
+                color: colors.secondary,
+              }}
+            >
               !
             </div>
 
-            <h1 className="mt-5 text-lg font-semibold">
-              Unable to load date
-            </h1>
+            <h1 className="mt-5 text-lg font-semibold">Unable to load date</h1>
 
-            <p className="mt-2 text-sm leading-6 text-zinc-500">
-              {error ??
-                "The employee date ledger could not be loaded."}
+            <p
+              className="mt-2 text-sm leading-6"
+              style={{ color: colors.secondary }}
+            >
+              {error ?? "The employee date ledger could not be loaded."}
             </p>
 
             <button
               type="button"
               onClick={goBack}
-              className="mt-6 rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-black transition hover:bg-zinc-200"
+              className="mt-6 rounded-xl px-4 py-2.5 text-sm font-medium transition"
+              style={{
+                backgroundColor: colors.accent,
+                color: colors.text,
+              }}
             >
               Back to employee
             </button>
@@ -632,826 +774,980 @@ export default function EmployeeDatePage() {
     );
   }
 
-  const balance = Number(
-    ledger.balance ?? 0,
-  );
-
-  const hasLeaveNoSalary =
-    Number(ledger.leave_no_salary ?? 0) > 0 ||
-    events.some(
-      (event) =>
-        event.event_type ===
-        "leave_no_salary",
-    );
+  /* ------------------------------------------------------------------------ */
+  /* Render                                                                    */
+  /* ------------------------------------------------------------------------ */
 
   return (
-    <main className="min-h-dvh bg-[#09090b] text-white">
-      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
-        {/* Header */}
-        <div className="flex flex-col gap-5">
-          <div className="flex items-center justify-between gap-4">
-            <button
-              type="button"
-              onClick={goBack}
-              className="inline-flex items-center gap-2 text-sm text-zinc-400 transition hover:text-white"
-            >
-              <span className="text-lg">
-                ←
-              </span>
-              Employee
-            </button>
+    <main
+      className="min-h-dvh text-white"
+      style={{ backgroundColor: colors.background }}
+    >
+      <div
+        className="mx-auto w-full max-w-4xl px-4 pt-5 sm:px-6 sm:pt-7"
+        style={{
+          paddingBottom: "calc(7rem + env(safe-area-inset-bottom))",
+        }}
+      >
+        {/* ---------------------------------------------------------------- */}
+        {/* Header                                                            */}
+        {/* ---------------------------------------------------------------- */}
 
-            <button
-              type="button"
-              onClick={() =>
-                openCreateEvent("advance")
-              }
-              className="rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-black transition hover:bg-zinc-200"
-            >
-              + Add transaction
-            </button>
-          </div>
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={goBack}
+            className="inline-flex items-center gap-2 text-sm transition"
+            style={{ color: colors.secondary }}
+          >
+            <span className="text-lg">←</span>
+            Employee
+          </button>
 
+          <button
+            type="button"
+            onClick={openNoteModal}
+            className="rounded-xl border px-3.5 py-2 text-xs font-medium transition"
+            style={{
+              borderColor: colors.border,
+              backgroundColor: colors.surface,
+              color: colors.secondary,
+            }}
+          >
+            + Add note
+          </button>
+        </div>
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Employee / date                                                    */}
+        {/* ---------------------------------------------------------------- */}
+
+        <div className="mt-6">
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+            {employee.name}
+          </h1>
+
+          <p
+            className="mt-1 text-sm"
+            style={{ color: colors.secondary }}
+          >
+            {formatDate(targetDate)}
+          </p>
+
+          {targetDate === todayString && (
+            <span
+              className="mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-medium"
+              style={{
+                backgroundColor: colors.accentSoft,
+                color: "#7DD3A8",
+              }}
+            >
+              Today
+            </span>
+          )}
+        </div>
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Date navigation                                                    */}
+        {/* ---------------------------------------------------------------- */}
+
+        <div
+          className="mt-5 flex items-center justify-between rounded-2xl border p-2"
+          style={{
+            borderColor: colors.border,
+            backgroundColor: colors.surface,
+          }}
+        >
+          <button
+            type="button"
+            disabled={previousDisabled}
+            onClick={() => goToDate(previousDate)}
+            className="rounded-xl px-3 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-30"
+            style={{ color: colors.secondary }}
+          >
+            ‹
+            <span className="ml-1 hidden sm:inline">Previous</span>
+          </button>
+
+          <span
+            className="text-xs"
+            style={{ color: colors.muted }}
+          >
+            {formatShortDate(targetDate)}
+          </span>
+
+          <button
+            type="button"
+            disabled={nextDisabled}
+            onClick={() => goToDate(nextDate)}
+            className="rounded-xl px-3 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-30"
+            style={{ color: colors.secondary }}
+          >
+            <span className="mr-1 hidden sm:inline">Next</span>
+            ›
+          </button>
+        </div>
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Shift toggle                                                       */}
+        {/* ---------------------------------------------------------------- */}
+
+        <section
+          className="mt-5 rounded-2xl border p-4"
+          style={{
+            borderColor: colors.border,
+            backgroundColor: colors.surface,
+          }}
+        >
           <div>
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-                {employee.name}
-              </h1>
+            <p
+              className="text-xs font-medium"
+              style={{ color: colors.secondary }}
+            >
+              Shift
+            </p>
 
-              {hasLeaveNoSalary && (
-                <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-400">
-                  No salary
-                </span>
-              )}
-            </div>
-
-            <p className="mt-1 text-sm text-zinc-500">
-              Daily employee ledger
+            <p
+              className="mt-1 text-xs"
+              style={{ color: colors.muted }}
+            >
+              Select the employee's working cycle.
             </p>
           </div>
-        </div>
 
-        {/* Date navigation */}
-        <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-950">
-          <div className="flex items-center justify-between gap-3 px-4 py-4 sm:px-5">
-            <button
-              type="button"
-              disabled={previousDisabled}
-              onClick={() =>
-                goToDate(previousDate)
-              }
-              className="rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
-            >
-              ←
-              <span className="ml-2 hidden sm:inline">
-                Previous
-              </span>
-            </button>
+          <div
+            className="mt-4 grid grid-cols-2 rounded-xl border p-1"
+            style={{
+              borderColor: colors.border,
+              backgroundColor: colors.background,
+            }}
+          >
+            {SHIFT_OPTIONS.map((shift) => {
+              const active = selectedShift === shift;
 
-            <div className="text-center">
-              <p className="text-base font-medium text-white sm:text-lg">
-                {formatDate(targetDate)}
-              </p>
-
-              {targetDate === todayString && (
-                <p className="mt-1 text-xs font-medium text-zinc-500">
-                  Today
-                </p>
-              )}
-            </div>
-
-            <button
-              type="button"
-              disabled={nextDisabled}
-              onClick={() =>
-                goToDate(nextDate)
-              }
-              className="rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
-            >
-              <span className="mr-2 hidden sm:inline">
-                Next
-              </span>
-              →
-            </button>
+              return (
+                <button
+                  key={shift}
+                  type="button"
+                  onClick={() => setSelectedShift(shift)}
+                  className="rounded-lg px-4 py-2.5 text-sm font-medium capitalize transition"
+                  style={{
+                    backgroundColor: active ? colors.accent : "transparent",
+                    color: active ? colors.text : colors.secondary,
+                  }}
+                >
+                  {shift}
+                </button>
+              );
+            })}
           </div>
-        </div>
 
-        {/* Summary */}
-        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <SummaryCard
-            label="Daily salary"
-            value={formatMoney(
-              ledger.daily_salary,
-            )}
-          />
-
-          <SummaryCard
-            label="Salary earned"
-            value={formatMoney(
-              ledger.salary_earned,
-            )}
-          />
-
-          <SummaryCard
-            label="Overtime"
-            value={formatMoney(
-              ledger.overtime,
-            )}
-            positive
-          />
-
-          <SummaryCard
-            label="Payments"
-            value={formatMoney(
-              ledger.payments,
-            )}
-          />
-
-          <SummaryCard
-            label="Advances"
-            value={formatMoney(
-              ledger.advances,
-            )}
-          />
-
-          <SummaryCard
-            label="Balance"
-            value={formatSignedMoney(
-              balance,
-            )}
-            balance
-            balanceValue={balance}
-          />
+          <p
+            className="mt-2 text-center text-[11px]"
+            style={{ color: colors.muted }}
+          >
+            {selectedShift === "day" ? "7 AM – 7 PM" : "7 PM – 7 AM"}
+          </p>
         </section>
 
-        {/* Main content */}
-        <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-          {/* Transactions */}
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-950">
-            <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
+        {/* ---------------------------------------------------------------- */}
+        {/* Attendance                                                        */}
+        {/* ---------------------------------------------------------------- */}
+
+        <section
+          className="mt-4 rounded-2xl border p-4"
+          style={{
+            borderColor: colors.border,
+            backgroundColor: colors.surface,
+          }}
+        >
+          <p
+            className="text-xs font-medium"
+            style={{ color: colors.secondary }}
+          >
+            Attendance
+          </p>
+
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => selectAttendance("present")}
+              className="rounded-xl border px-4 py-3 text-sm font-medium transition"
+              style={{
+                borderColor:
+                  attendanceStatus === "present"
+                    ? colors.accent
+                    : colors.border,
+                backgroundColor:
+                  attendanceStatus === "present"
+                    ? colors.accentSoft
+                    : colors.background,
+                color:
+                  attendanceStatus === "present"
+                    ? "#7DD3A8"
+                    : colors.secondary,
+              }}
+            >
+              Present
+            </button>
+
+            <button
+              type="button"
+              onClick={() => selectAttendance("leave")}
+              className="rounded-xl border px-4 py-3 text-sm font-medium transition"
+              style={{
+                borderColor:
+                  attendanceStatus === "leave"
+                    ? colors.error
+                    : colors.border,
+                backgroundColor:
+                  attendanceStatus === "leave"
+                    ? colors.errorBackground
+                    : colors.background,
+                color:
+                  attendanceStatus === "leave"
+                    ? colors.error
+                    : colors.secondary,
+              }}
+            >
+              Leave
+            </button>
+          </div>
+        </section>
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Salary                                                             */}
+        {/* ---------------------------------------------------------------- */}
+
+        <section
+          className="mt-4 rounded-2xl border p-4"
+          style={{
+            borderColor: colors.border,
+            backgroundColor: colors.surface,
+          }}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p
+                className="text-xs font-medium"
+                style={{ color: colors.secondary }}
+              >
+                Salary
+              </p>
+
+              <p
+                className="mt-1 text-xs"
+                style={{ color: colors.muted }}
+              >
+                Per-day salary for this date. You can edit it when needed.
+              </p>
+            </div>
+
+            {ledger.daily_salary != null && (
+              <span
+                className="text-xs"
+                style={{ color: colors.muted }}
+              >
+                Rate: RM {formatMoney(ledger.daily_salary)}
+              </span>
+            )}
+          </div>
+
+          <div className="mt-4">
+            <label
+              className="mb-2 block text-[11px]"
+              style={{ color: colors.muted }}
+            >
+              Base salary
+            </label>
+
+            <div className="relative">
+              <span
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-sm"
+                style={{ color: colors.muted }}
+              >
+                RM
+              </span>
+
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={salaryAmount}
+                onChange={(event) => setSalaryAmount(event.target.value)}
+                disabled={attendanceStatus === "leave" || saving || settling}
+                className="w-full rounded-xl border py-3 pl-11 pr-3 text-sm outline-none transition disabled:cursor-not-allowed disabled:opacity-40"
+                style={{
+                  borderColor: colors.border,
+                  backgroundColor: colors.background,
+                  color: colors.text,
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <MoneyInput
+              label="Overtime"
+              value={overtime}
+              onChange={setOvertime}
+              disabled={attendanceStatus === "leave" || saving || settling}
+            />
+
+            <MoneyInput
+              label="Salary cut"
+              value={salaryCut}
+              onChange={setSalaryCut}
+              disabled={attendanceStatus === "leave" || saving || settling}
+            />
+          </div>
+
+          <div
+            className="mt-5 rounded-xl border p-4"
+            style={{
+              borderColor: colors.border,
+              backgroundColor: colors.background,
+            }}
+          >
+            <div className="flex items-center justify-between gap-3">
               <div>
-                <h2 className="text-sm font-semibold text-white">
-                  Transactions
-                </h2>
-                <p className="mt-1 text-xs text-zinc-500">
-                  Activity recorded on this date
+                <p
+                  className="text-xs"
+                  style={{ color: colors.muted }}
+                >
+                  Today's earning
+                </p>
+
+                <p className="mt-1 text-lg font-semibold">
+                  RM {formatMoney(todayEarning)}
                 </p>
               </div>
 
-              <span className="rounded-full bg-zinc-900 px-2.5 py-1 text-xs text-zinc-500">
-                {events.length}
-              </span>
+              <div className="text-right">
+                <p
+                  className="text-[10px]"
+                  style={{ color: colors.muted }}
+                >
+                  Salary + OT − Cut
+                </p>
+
+                <p
+                  className="mt-1 text-xs"
+                  style={{ color: colors.secondary }}
+                >
+                  RM {formatMoney(currentSalary)} + RM {formatMoney(currentOvertime)} − RM {formatMoney(currentSalaryCut)}
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Today's salary summary                                             */}
+        {/* ---------------------------------------------------------------- */}
+
+        <section
+          className="mt-4 rounded-2xl border p-4"
+          style={{
+            borderColor: colors.border,
+            backgroundColor: colors.surface,
+          }}
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p
+                className="text-sm font-semibold"
+                style={{ color: colors.text }}
+              >
+                Today's salary summary
+              </p>
+
+              <p
+                className="mt-1 text-xs leading-5"
+                style={{ color: colors.muted }}
+              >
+                Salary payment summary for {employee.name}.
+              </p>
             </div>
 
-            <div className="p-4">
-              {events.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-zinc-800 px-5 py-10 text-center">
-                  <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-zinc-900 text-zinc-500">
-                    +
-                  </div>
+            <span
+              className="rounded-full px-2.5 py-1 text-[11px] font-medium"
+              style={{
+                backgroundColor: settlementAlreadyRecorded
+                  ? colors.accentSoft
+                  : colors.background,
+                color: paymentStatusColor,
+              }}
+            >
+              {paymentStatusText}
+            </span>
+          </div>
 
-                  <p className="mt-3 text-sm text-zinc-400">
-                    No transactions for this date
-                  </p>
+          <div className="mt-4 space-y-3">
+            <SummaryRow label="Base salary" value={currentSalary} />
+            <SummaryRow label="Overtime" value={currentOvertime} />
+            <SummaryRow label="Salary cut" value={-currentSalaryCut} negative />
 
-                  <p className="mt-1 text-xs text-zinc-600">
-                    Add an overtime, advance,
-                    payment or other event.
-                  </p>
+            <div
+              className="border-t pt-3"
+              style={{ borderColor: colors.border }}
+            >
+              <SummaryRow
+                label="Today's earning"
+                value={todayEarning}
+                strong
+                positive={todayEarning > 0}
+              />
+            </div>
 
-                  <button
-                    type="button"
-                    onClick={() =>
-                      openCreateEvent(
-                        "advance",
-                      )
-                    }
-                    className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2 text-xs font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
+            <SummaryRow
+              label="Outstanding after payment"
+              value={outstandingAfterRecordedPayment}
+              positive={outstandingAfterRecordedPayment > 0}
+            />
+
+            <SummaryRow
+              label="Payment"
+              value={settlementAlreadyRecorded ? existingSettlementAmount : 0}
+              positive={settlementAlreadyRecorded}
+            />
+
+            <div
+              className="rounded-xl border p-3.5"
+              style={{
+                borderColor: colors.border,
+                backgroundColor: colors.background,
+              }}
+            >
+              <div className="flex items-center justify-between gap-4">
+                <span
+                  className="text-xs"
+                  style={{ color: colors.secondary }}
+                >
+                  Expense / payment date
+                </span>
+
+                <span className="text-sm font-medium">
+                  {formatShortDate(settlementDate)}
+                </span>
+              </div>
+
+              <p
+                className="mt-1 text-[11px] leading-5"
+                style={{ color: colors.muted }}
+              >
+                {selectedShift === "day"
+                  ? "Day shift is recorded on the selected date."
+                  : "Night shift is recorded on the following calendar date."}
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Actions                                                            */}
+        {/* ---------------------------------------------------------------- */}
+
+        <section className="mt-4">
+          <button
+            type="button"
+            onClick={saveWithoutSettling}
+            disabled={saving || settling}
+            className="w-full rounded-xl border px-4 py-3.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
+            style={{
+              borderColor: colors.border,
+              backgroundColor: colors.surface,
+              color: colors.text,
+            }}
+          >
+            {saving ? "Saving..." : "Save without settling"}
+          </button>
+
+          <button
+            type="button"
+            onClick={openSettlementConfirmation}
+            disabled={
+              saving || settling || settlementAmount <= 0
+            }
+            className="mt-2 w-full rounded-xl px-4 py-3.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40"
+            style={{
+              backgroundColor: colors.accent,
+              color: colors.text,
+            }}
+          >
+            {settlementAlreadyRecorded
+              ? `Update settlement · RM ${formatMoney(settlementAmount)}`
+              : `Settle now · RM ${formatMoney(settlementAmount)}`}
+          </button>
+
+          <p
+            className="mt-2 text-center text-[11px] leading-5"
+            style={{ color: colors.muted }}
+          >
+            Save without settling records earnings only. Settlement records
+            the payment on the displayed expense date.
+          </p>
+        </section>
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Notes                                                              */}
+        {/* ---------------------------------------------------------------- */}
+
+        <section
+          className="mt-6 rounded-2xl border"
+          style={{
+            borderColor: colors.border,
+            backgroundColor: colors.surface,
+          }}
+        >
+          <div
+            className="flex items-center justify-between border-b px-4 py-4"
+            style={{ borderColor: colors.border }}
+          >
+            <div>
+              <h2 className="text-sm font-semibold">Notes</h2>
+
+              <p
+                className="mt-1 text-xs"
+                style={{ color: colors.muted }}
+              >
+                Notes for this date.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={openNoteModal}
+              className="rounded-lg px-2.5 py-1.5 text-xs font-medium transition"
+              style={{
+                backgroundColor: colors.accentSoft,
+                color: "#7DD3A8",
+              }}
+            >
+              + Add note
+            </button>
+          </div>
+
+          <div className="p-4">
+            {notes.length === 0 ? (
+              <p
+                className="py-5 text-center text-xs"
+                style={{ color: colors.muted }}
+              >
+                No notes for this date.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {notes.map((note) => (
+                  <div
+                    key={note.id}
+                    className="rounded-xl border p-3.5"
+                    style={{
+                      borderColor: colors.border,
+                      backgroundColor: colors.background,
+                    }}
                   >
-                    Add transaction
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {events.map((event) => {
-                    const isPositive =
-                      event.event_type ===
-                      "overtime";
+                    <p className="text-sm font-medium">{note.title}</p>
 
-                    return (
-                      <div
-                        key={event.id}
-                        className="group rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 transition hover:border-zinc-700 hover:bg-zinc-900"
-                      >
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-sm font-medium text-white">
-                                {getEventLabel(
-                                  event.event_type,
-                                )}
-                              </span>
+                    <p
+                      className="mt-1.5 whitespace-pre-wrap text-xs leading-5"
+                      style={{ color: colors.secondary }}
+                    >
+                      {note.content}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
 
-                              <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-500">
-                                {event.event_type.replaceAll(
-                                  "_",
-                                  " ",
-                                )}
-                              </span>
-                            </div>
+      {/* ================================================================== */}
+      {/* Settlement confirmation modal                                      */}
+      {/* ================================================================== */}
 
-                            {event.description && (
-                              <p className="mt-1.5 text-sm text-zinc-400">
-                                {event.description}
-                              </p>
-                            )}
+      {showSettlementModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          style={{
+            paddingBottom: "calc(1rem + env(safe-area-inset-bottom))",
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border shadow-2xl"
+            style={{
+              borderColor: colors.border,
+              backgroundColor: colors.surface,
+            }}
+          >
+            <div
+              className="border-b px-5 py-4"
+              style={{ borderColor: colors.border }}
+            >
+              <h2 className="text-base font-semibold">
+                {settlementAlreadyRecorded
+                  ? "Update salary settlement?"
+                  : "Settle salary now?"}
+              </h2>
 
-                            {event.note && (
-                              <p className="mt-2 text-xs leading-5 text-zinc-600">
-                                {event.note}
-                              </p>
-                            )}
-                          </div>
-
-                          <div className="shrink-0 text-right">
-                            <p
-                              className={`text-sm font-semibold ${
-                                isPositive
-                                  ? "text-emerald-400"
-                                  : "text-zinc-300"
-                              }`}
-                            >
-                              {getEventPrefix(
-                                event.event_type,
-                              )}
-                              {formatMoney(
-                                event.amount,
-                              )}
-                            </p>
-
-                            <div className="mt-2 flex items-center justify-end gap-2 opacity-100 sm:opacity-0 sm:transition sm:group-hover:opacity-100">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  openEditEvent(
-                                    event,
-                                  )
-                                }
-                                disabled={saving}
-                                className="text-xs text-zinc-500 transition hover:text-white disabled:opacity-30"
-                              >
-                                Edit
-                              </button>
-
-                              <span className="text-zinc-800">
-                                |
-                              </span>
-
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  deleteEvent(
-                                    event,
-                                  )
-                                }
-                                disabled={saving}
-                                className="text-xs text-zinc-500 transition hover:text-red-400 disabled:opacity-30"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+              <p
+                className="mt-1 text-xs"
+                style={{ color: colors.muted }}
+              >
+                Work date: {formatShortDate(targetDate)}
+              </p>
             </div>
 
-            {/* Quick actions */}
-            <div className="border-t border-zinc-800 px-4 py-4">
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <QuickAction
-                  label="Overtime"
-                  onClick={() =>
-                    openCreateEvent(
-                      "overtime",
-                    )
-                  }
-                />
+            <div className="p-5">
+              <div
+                className="rounded-xl border p-4"
+                style={{
+                  borderColor: "rgba(31, 122, 94, 0.35)",
+                  backgroundColor: colors.accentSoft,
+                }}
+              >
+                <p
+                  className="text-xs leading-5"
+                  style={{ color: colors.secondary }}
+                >
+                  {settlementAlreadyRecorded
+                    ? "The existing salary settlement will be updated to:"
+                    : "You are about to pay this employee:"}
+                </p>
 
-                <QuickAction
-                  label="Advance"
-                  onClick={() =>
-                    openCreateEvent(
-                      "advance",
-                    )
-                  }
-                />
-
-                <QuickAction
-                  label="Payment"
-                  onClick={() =>
-                    openCreateEvent(
-                      "payment",
-                    )
-                  }
-                />
-
-                <QuickAction
-                  label="No salary"
-                  onClick={() =>
-                    openCreateEvent(
-                      "leave_no_salary",
-                    )
-                  }
-                />
-              </div>
-            </div>
-          </section>
-
-          {/* Right column */}
-          <div className="space-y-5">
-            {/* Day breakdown */}
-            <section className="rounded-2xl border border-zinc-800 bg-zinc-950">
-              <div className="border-b border-zinc-800 px-5 py-4">
-                <h2 className="text-sm font-semibold text-white">
-                  Day breakdown
-                </h2>
+                <p className="mt-2 text-2xl font-semibold">
+                  RM {formatMoney(settlementAmount)}
+                </p>
               </div>
 
-              <div className="divide-y divide-zinc-800">
-                <BreakdownRow
-                  label="Salary earned"
-                  value={ledger.salary_earned}
+              <div className="mt-4 space-y-3">
+                <SettlementRow
+                  label="Current balance before today's edit"
+                  value={balance}
                 />
 
-                <BreakdownRow
-                  label="Overtime"
-                  value={ledger.overtime}
+                <SettlementRow
+                  label="Today's earning"
+                  value={todayEarning}
                   positive
                 />
 
-                <BreakdownRow
-                  label="No salary"
-                  value={ledger.leave_no_salary}
-                />
-
-                <BreakdownRow
-                  label="Payments"
-                  value={ledger.payments}
-                />
-
-                <BreakdownRow
-                  label="Advances"
-                  value={ledger.advances}
-                />
-
-                <BreakdownRow
-                  label="Debt offsets"
-                  value={ledger.debt_offsets}
-                />
-
-                <div className="flex items-center justify-between px-5 py-4">
-                  <span className="text-sm font-medium text-zinc-300">
-                    Balance through date
-                  </span>
-
-                  <span
-                    className={`text-sm font-semibold ${
-                      balance >= 0
-                        ? "text-emerald-400"
-                        : "text-red-400"
-                    }`}
-                  >
-                    {balance >= 0 ? "+" : "-"}
-                    {formatMoney(balance)}
-                  </span>
-                </div>
-              </div>
-            </section>
-
-            {/* Notes */}
-            <section className="rounded-2xl border border-zinc-800 bg-zinc-950">
-              <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
-                <div>
-                  <h2 className="text-sm font-semibold text-white">
-                    Notes
-                  </h2>
-
-                  <p className="mt-1 text-xs text-zinc-500">
-                    Notes for this date
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={openNoteModal}
-                  className="rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
+                <div
+                  className="border-t pt-3"
+                  style={{ borderColor: colors.border }}
                 >
-                  + Add
-                </button>
+                  <SettlementRow
+                    label="Total payment"
+                    value={settlementAmount}
+                    strong
+                  />
+                </div>
+
+                <SettlementRow
+                  label="Expense / payment date"
+                  valueLabel={formatShortDate(settlementDate)}
+                  strong
+                />
               </div>
 
-              <div className="p-4">
-                {notes.length === 0 ? (
-                  <p className="py-5 text-center text-xs text-zinc-600">
-                    No notes for this date.
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {notes.map(
-                      (note: EmployeeNote) => (
-                        <div
-                          key={note.id}
-                          className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3.5"
-                        >
-                          <p className="text-sm font-medium text-zinc-200">
-                            {note.title}
-                          </p>
+              <p
+                className="mt-5 text-xs leading-5"
+                style={{ color: colors.secondary }}
+              >
+                {settlementAlreadyRecorded
+                  ? "This updates the existing settlement transaction. It will not create a new payment transaction for this employee's work date."
+                  : "This will record the full amount as a payment on the expense date shown above. Make sure you have actually paid this employee before continuing."}
+              </p>
+            </div>
 
-                          <p className="mt-1.5 whitespace-pre-wrap text-xs leading-5 text-zinc-500">
-                            {note.content}
-                          </p>
-                        </div>
-                      ),
-                    )}
-                  </div>
-                )}
-              </div>
-            </section>
+            <div
+              className="flex gap-2 border-t p-4"
+              style={{ borderColor: colors.border }}
+            >
+              <button
+                type="button"
+                onClick={() => setShowSettlementModal(false)}
+                disabled={settling}
+                className="flex-1 rounded-xl border px-4 py-3 text-sm font-medium transition disabled:opacity-40"
+                style={{
+                  borderColor: colors.border,
+                  backgroundColor: colors.background,
+                  color: colors.secondary,
+                }}
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={settleNow}
+                disabled={settling}
+                className="flex-1 rounded-xl px-4 py-3 text-sm font-semibold transition disabled:opacity-40"
+                style={{
+                  backgroundColor: colors.accent,
+                  color: colors.text,
+                }}
+              >
+                {settling
+                  ? "Saving..."
+                  : settlementAlreadyRecorded
+                    ? "Confirm update"
+                    : "Confirm & settle"}
+              </button>
+            </div>
           </div>
         </div>
+      )}
 
-        {/* Event modal */}
-        {showEventModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-            <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl">
-              <div className="flex items-start justify-between border-b border-zinc-800 px-5 py-4">
-                <div>
-                  <h2 className="text-base font-semibold text-white">
-                    {editingEvent
-                      ? "Edit transaction"
-                      : "Add transaction"}
-                  </h2>
+      {/* ================================================================== */}
+      {/* Add note modal                                                      */}
+      {/* ================================================================== */}
 
-                  <p className="mt-1 text-xs text-zinc-500">
-                    {formatShortDate(
-                      targetDate,
-                    )}
-                  </p>
-                </div>
+      {showNoteModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          style={{
+            paddingBottom: "calc(1rem + env(safe-area-inset-bottom))",
+          }}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl border shadow-2xl"
+            style={{
+              borderColor: colors.border,
+              backgroundColor: colors.surface,
+            }}
+          >
+            <div
+              className="flex items-start justify-between border-b px-5 py-4"
+              style={{ borderColor: colors.border }}
+            >
+              <div>
+                <h2 className="text-base font-semibold">Add note</h2>
 
-                <button
-                  type="button"
-                  onClick={
-                    closeEventModal
-                  }
-                  disabled={saving}
-                  className="text-lg text-zinc-500 transition hover:text-white disabled:opacity-30"
+                <p
+                  className="mt-1 text-xs"
+                  style={{ color: colors.muted }}
                 >
-                  ×
-                </button>
+                  {formatShortDate(targetDate)}
+                </p>
               </div>
 
-              <div className="space-y-4 p-5">
-                <div>
-                  <label className="mb-2 block text-xs font-medium text-zinc-400">
-                    Transaction type
-                  </label>
+              <button
+                type="button"
+                onClick={closeNoteModal}
+                disabled={savingNote}
+                className="text-lg transition disabled:opacity-30"
+                style={{ color: colors.muted }}
+              >
+                ×
+              </button>
+            </div>
 
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {EVENT_TYPES.map(
-                      (type) => (
-                        <button
-                          key={type}
-                          type="button"
-                          onClick={() =>
-                            setEventType(
-                              type,
-                            )
-                          }
-                          className={`rounded-xl border px-3 py-2.5 text-left text-xs transition ${
-                            eventType === type
-                              ? "border-white bg-white text-black"
-                              : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-white"
-                          }`}
-                        >
-                          <span className="block font-medium">
-                            {EVENT_LABELS[
-                              type
-                            ]}
-                          </span>
+            <div className="space-y-4 p-5">
+              <div>
+                <label
+                  className="mb-2 block text-xs font-medium"
+                  style={{ color: colors.secondary }}
+                >
+                  Title
+                </label>
 
-                          <span
-                            className={`mt-0.5 block text-[10px] ${
-                              eventType ===
-                              type
-                                ? "text-zinc-600"
-                                : "text-zinc-600"
-                            }`}
-                          >
-                            {
-                              EVENT_DESCRIPTIONS[
-                                type
-                              ]
-                            }
-                          </span>
-                        </button>
-                      ),
-                    )}
-                  </div>
-                </div>
-
-                {eventType !==
-                  "leave_no_salary" && (
-                  <div>
-                    <label className="mb-2 block text-xs font-medium text-zinc-400">
-                      Amount
-                    </label>
-
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={eventAmount}
-                      onChange={(e) =>
-                        setEventAmount(
-                          e.target.value,
-                        )
-                      }
-                      placeholder="0.00"
-                      className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-3 text-sm text-white outline-none transition placeholder:text-zinc-700 focus:border-zinc-600"
-                    />
-                  </div>
-                )}
-
-                {eventType ===
-                  "leave_no_salary" && (
-                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3">
-                    <p className="text-xs leading-5 text-amber-400">
-                      This will mark the selected
-                      date as leave without salary.
-                      The day's salary earned will
-                      become zero.
-                    </p>
-                  </div>
-                )}
-
-                <div>
-                  <label className="mb-2 block text-xs font-medium text-zinc-400">
-                    Description
-                  </label>
-
-                  <input
-                    type="text"
-                    value={eventDescription}
-                    onChange={(e) =>
-                      setEventDescription(
-                        e.target.value,
-                      )
-                    }
-                    placeholder={getEventLabel(
-                      eventType,
-                    )}
-                    className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-3 text-sm text-white outline-none transition placeholder:text-zinc-700 focus:border-zinc-600"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-xs font-medium text-zinc-400">
-                    Note
-                  </label>
-
-                  <textarea
-                    value={eventNote}
-                    onChange={(e) =>
-                      setEventNote(
-                        e.target.value,
-                      )
-                    }
-                    rows={3}
-                    placeholder="Optional note..."
-                    className="w-full resize-none rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-3 text-sm text-white outline-none transition placeholder:text-zinc-700 focus:border-zinc-600"
-                  />
-                </div>
+                <input
+                  type="text"
+                  value={noteTitle}
+                  onChange={(event) => setNoteTitle(event.target.value)}
+                  placeholder="Note title"
+                  className="w-full rounded-xl border px-3.5 py-3 text-sm outline-none"
+                  style={{
+                    borderColor: colors.border,
+                    backgroundColor: colors.background,
+                    color: colors.text,
+                  }}
+                />
               </div>
 
-              <div className="flex justify-end gap-2 border-t border-zinc-800 px-5 py-4">
-                <button
-                  type="button"
-                  onClick={
-                    closeEventModal
-                  }
-                  disabled={saving}
-                  className="rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2.5 text-sm text-zinc-400 transition hover:bg-zinc-800 hover:text-white disabled:opacity-30"
+              <div>
+                <label
+                  className="mb-2 block text-xs font-medium"
+                  style={{ color: colors.secondary }}
                 >
-                  Cancel
-                </button>
+                  Note
+                </label>
 
-                <button
-                  type="button"
-                  onClick={saveEvent}
-                  disabled={saving}
-                  className="rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {saving
-                    ? "Saving..."
-                    : editingEvent
-                      ? "Save changes"
-                      : "Add transaction"}
-                </button>
+                <textarea
+                  value={noteContent}
+                  onChange={(event) => setNoteContent(event.target.value)}
+                  rows={5}
+                  placeholder="Write a note about this date..."
+                  className="w-full resize-none rounded-xl border px-3.5 py-3 text-sm outline-none"
+                  style={{
+                    borderColor: colors.border,
+                    backgroundColor: colors.background,
+                    color: colors.text,
+                  }}
+                />
               </div>
             </div>
-          </div>
-        )}
 
-        {/* Note modal */}
-        {showNoteModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-            <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl">
-              <div className="flex items-start justify-between border-b border-zinc-800 px-5 py-4">
-                <div>
-                  <h2 className="text-base font-semibold text-white">
-                    Add note
-                  </h2>
+            <div
+              className="flex justify-end gap-2 border-t px-5 py-4"
+              style={{ borderColor: colors.border }}
+            >
+              <button
+                type="button"
+                onClick={closeNoteModal}
+                disabled={savingNote}
+                className="rounded-xl border px-4 py-2.5 text-sm transition disabled:opacity-30"
+                style={{
+                  borderColor: colors.border,
+                  backgroundColor: colors.background,
+                  color: colors.secondary,
+                }}
+              >
+                Cancel
+              </button>
 
-                  <p className="mt-1 text-xs text-zinc-500">
-                    {formatShortDate(
-                      targetDate,
-                    )}
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={
-                    closeNoteModal
-                  }
-                  disabled={savingNote}
-                  className="text-lg text-zinc-500 transition hover:text-white disabled:opacity-30"
-                >
-                  ×
-                </button>
-              </div>
-
-              <div className="space-y-4 p-5">
-                <div>
-                  <label className="mb-2 block text-xs font-medium text-zinc-400">
-                    Title
-                  </label>
-
-                  <input
-                    type="text"
-                    value={noteTitle}
-                    onChange={(e) =>
-                      setNoteTitle(
-                        e.target.value,
-                      )
-                    }
-                    placeholder="Note title"
-                    className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-3 text-sm text-white outline-none transition placeholder:text-zinc-700 focus:border-zinc-600"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-xs font-medium text-zinc-400">
-                    Note
-                  </label>
-
-                  <textarea
-                    value={noteContent}
-                    onChange={(e) =>
-                      setNoteContent(
-                        e.target.value,
-                      )
-                    }
-                    rows={5}
-                    placeholder="Write a note about this date..."
-                    className="w-full resize-none rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-3 text-sm text-white outline-none transition placeholder:text-zinc-700 focus:border-zinc-600"
-                  />
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2 border-t border-zinc-800 px-5 py-4">
-                <button
-                  type="button"
-                  onClick={
-                    closeNoteModal
-                  }
-                  disabled={savingNote}
-                  className="rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2.5 text-sm text-zinc-400 transition hover:bg-zinc-800 hover:text-white disabled:opacity-30"
-                >
-                  Cancel
-                </button>
-
-                <button
-                  type="button"
-                  onClick={createNote}
-                  disabled={savingNote}
-                  className="rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {savingNote
-                    ? "Saving..."
-                    : "Add note"}
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={createNote}
+                disabled={savingNote}
+                className="rounded-xl px-4 py-2.5 text-sm font-medium transition disabled:opacity-50"
+                style={{
+                  backgroundColor: colors.accent,
+                  color: colors.text,
+                }}
+              >
+                {savingNote ? "Saving..." : "Add note"}
+              </button>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </main>
   );
 }
 
-function SummaryCard({
+/* ========================================================================== */
+/* Components                                                                 */
+/* ========================================================================== */
+
+function MoneyInput({
   label,
   value,
-  positive = false,
-  balance = false,
-  balanceValue = 0,
+  onChange,
+  disabled,
 }: {
   label: string;
   value: string;
-  positive?: boolean;
-  balance?: boolean;
-  balanceValue?: number;
+  onChange: (value: string) => void;
+  disabled?: boolean;
 }) {
-  let valueClass =
-    "text-white";
-
-  if (positive) {
-    valueClass = "text-emerald-400";
-  }
-
-  if (balance) {
-    valueClass =
-      balanceValue >= 0
-        ? "text-emerald-400"
-        : "text-red-400";
-  }
-
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-600">
-        {label}
-      </p>
-
-      <p
-        className={`mt-2 text-lg font-semibold tracking-tight ${valueClass}`}
+    <div>
+      <label
+        className="mb-2 block text-[11px] font-medium"
+        style={{ color: colors.muted }}
       >
-        {value}
-      </p>
+        {label}
+      </label>
+
+      <div className="relative">
+        <span
+          className="absolute left-3 top-1/2 -translate-y-1/2 text-sm"
+          style={{ color: colors.muted }}
+        >
+          RM
+        </span>
+
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="0.00"
+          disabled={disabled}
+          className="w-full rounded-xl border py-2.5 pl-11 pr-3 text-sm outline-none transition disabled:cursor-not-allowed disabled:opacity-40"
+          style={{
+            borderColor: colors.border,
+            backgroundColor: colors.background,
+            color: colors.text,
+          }}
+        />
+      </div>
     </div>
   );
 }
 
-function BreakdownRow({
+function SummaryRow({
   label,
   value,
+  valueLabel,
   positive = false,
+  negative = false,
+  strong = false,
 }: {
   label: string;
-  value: string | number | null | undefined;
+  value?: number;
+  valueLabel?: string;
   positive?: boolean;
+  negative?: boolean;
+  strong?: boolean;
 }) {
-  const amount = Number(value ?? 0);
-
   return (
-    <div className="flex items-center justify-between px-5 py-3.5">
-      <span className="text-sm text-zinc-500">
+    <div className="flex items-center justify-between gap-4">
+      <span
+        className={`text-xs ${strong ? "font-medium" : ""}`}
+        style={{ color: strong ? colors.text : colors.secondary }}
+      >
         {label}
       </span>
 
       <span
-        className={`text-sm font-medium ${
-          positive
-            ? "text-emerald-400"
-            : "text-zinc-300"
-        }`}
+        className={`text-sm ${strong ? "font-semibold" : "font-medium"}`}
+        style={{
+          color: negative
+            ? colors.error
+            : positive
+              ? "#7DD3A8"
+              : colors.text,
+        }}
       >
-        {positive ? "+" : ""}
-        {formatMoney(amount)}
+        {valueLabel ?? `RM ${formatMoney(value ?? 0)}`}
       </span>
     </div>
   );
 }
 
-function QuickAction({
+function SettlementRow({
   label,
-  onClick,
+  value,
+  valueLabel,
+  positive = false,
+  strong = false,
 }: {
   label: string;
-  onClick: () => void;
+  value?: number;
+  valueLabel?: string;
+  positive?: boolean;
+  strong?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2.5 text-xs font-medium text-zinc-400 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-white"
-    >
-      + {label}
-    </button>
+    <div className="flex items-center justify-between gap-4">
+      <span
+        className={`text-xs ${strong ? "font-medium" : ""}`}
+        style={{ color: strong ? colors.text : colors.secondary }}
+      >
+        {label}
+      </span>
+
+      <span
+        className={`text-sm ${strong ? "font-semibold" : "font-medium"}`}
+        style={{ color: positive ? "#7DD3A8" : colors.text }}
+      >
+        {valueLabel ?? `RM ${formatMoney(value ?? 0)}`}
+      </span>
+    </div>
   );
 }

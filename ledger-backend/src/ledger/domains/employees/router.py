@@ -10,6 +10,9 @@ from ledger.domains.employees.schemas import (
     EmployeeBalanceResponse,
     EmployeeCalendarResponse,
     EmployeeCreate,
+    EmployeeDailyRecordCreate,
+    EmployeeDailyRecordResponse,
+    EmployeeDailyRecordUpdate,
     EmployeeFinancialEventCreate,
     EmployeeFinancialEventResponse,
     EmployeeFinancialEventUpdate,
@@ -22,22 +25,28 @@ from ledger.domains.employees.schemas import (
 )
 from ledger.domains.employees.service import (
     create_employee,
+    create_employee_daily_record,
     create_employee_note,
     create_financial_event,
     delete_employee,
+    delete_employee_daily_record,
     delete_employee_note,
     delete_financial_event,
     get_employee,
     get_employee_balance,
     get_employee_calendar,
+    get_employee_daily_record,
+    get_employee_daily_record_by_date_shift,
     get_employee_ledger,
     get_employee_note,
     get_restaurant_business_for_user,
     get_financial_event,
+    list_employee_daily_records,
     list_employee_notes,
     list_employees,
     list_financial_events,
     update_employee,
+    update_employee_daily_record,
     update_employee_note,
     update_financial_event,
 )
@@ -252,6 +261,205 @@ async def get_employee_ledger_endpoint(
         session,
         employee,
         ledger_date,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Employee daily records
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{employee_id}/daily-records",
+    response_model=list[EmployeeDailyRecordResponse],
+)
+async def list_employee_daily_records_endpoint(
+    business_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    record_date: date | None = Query(None, alias="date"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[EmployeeDailyRecordResponse]:
+    employee = await require_employee_access(
+        business_id,
+        employee_id,
+        current_user,
+        session,
+    )
+
+    return await list_employee_daily_records(
+        session,
+        employee.id,
+        record_date,
+    )
+
+
+@router.post(
+    "/{employee_id}/daily-records",
+    response_model=EmployeeDailyRecordResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_employee_daily_record_endpoint(
+    business_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    data: EmployeeDailyRecordCreate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> EmployeeDailyRecordResponse:
+    employee = await require_employee_access(
+        business_id,
+        employee_id,
+        current_user,
+        session,
+    )
+
+    existing = await get_employee_daily_record_by_date_shift(
+        session,
+        employee.id,
+        data.record_date,
+        data.shift,
+    )
+
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A daily record already exists for this employee, "
+                "date, and shift."
+            ),
+        )
+
+    try:
+        return await create_employee_daily_record(
+            session,
+            employee,
+            data,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/{employee_id}/daily-records/{record_id}",
+    response_model=EmployeeDailyRecordResponse,
+)
+async def get_employee_daily_record_endpoint(
+    business_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    record_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> EmployeeDailyRecordResponse:
+    employee = await require_employee_access(
+        business_id,
+        employee_id,
+        current_user,
+        session,
+    )
+
+    record = await get_employee_daily_record(
+        session,
+        employee.id,
+        record_id,
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Employee daily record not found",
+        )
+
+    return record
+
+
+@router.patch(
+    "/{employee_id}/daily-records/{record_id}",
+    response_model=EmployeeDailyRecordResponse,
+)
+async def update_employee_daily_record_endpoint(
+    business_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    record_id: uuid.UUID,
+    data: EmployeeDailyRecordUpdate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> EmployeeDailyRecordResponse:
+    employee = await require_employee_access(
+        business_id,
+        employee_id,
+        current_user,
+        session,
+    )
+
+    record = await get_employee_daily_record(
+        session,
+        employee.id,
+        record_id,
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Employee daily record not found",
+        )
+
+    try:
+        return await update_employee_daily_record(
+            session,
+            record,
+            data,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+
+        if "already exists" in detail.lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=detail,
+            ) from exc
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=detail,
+        ) from exc
+
+
+@router.delete(
+    "/{employee_id}/daily-records/{record_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_employee_daily_record_endpoint(
+    business_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    record_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> None:
+    employee = await require_employee_access(
+        business_id,
+        employee_id,
+        current_user,
+        session,
+    )
+
+    record = await get_employee_daily_record(
+        session,
+        employee.id,
+        record_id,
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Employee daily record not found",
+        )
+
+    await delete_employee_daily_record(
+        session,
+        record,
     )
 
 

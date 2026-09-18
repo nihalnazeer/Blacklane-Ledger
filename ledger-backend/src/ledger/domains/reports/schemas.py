@@ -77,6 +77,20 @@ class ReportDailyResponse(BaseModel):
     balance: Decimal
 
 
+class DailyClosingCreate(BaseModel):
+    note: str | None = None
+
+
+class DailyClosingResponse(BaseModel):
+    id: uuid.UUID
+    business_id: uuid.UUID
+    report_date: date
+    accounting_fingerprint: str
+    note: str | None
+    is_closed: bool
+    closed_at: datetime | None
+
+
 class MonthlyClosingCreate(BaseModel):
     bank_balance: Decimal = Field(
         ge=0,

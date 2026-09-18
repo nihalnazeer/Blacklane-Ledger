@@ -1,7 +1,6 @@
 import uuid
 from datetime import date
 
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -85,7 +84,7 @@ async def create_sale(
         business_id=business_id,
         sale_date=data.sale_date,
         cash_income=data.cash_income,
-        bank_balance=data.bank_balance,
+        atm_topup=data.atm_topup,
     )
 
     session.add(sale)

@@ -94,6 +94,38 @@ async def get_dashboard(
         business_id,
     )
 
+    elapsed_days = target_date.day
+
+    cash_sales_average = (
+        monthly_report["total_cash_sales"] / elapsed_days
+        if elapsed_days > 0
+        else ZERO
+    )
+
+    expenses_average = (
+        monthly_report["total_expenses"] / elapsed_days
+        if elapsed_days > 0
+        else ZERO
+    )
+
+    employee_salary_average = (
+        monthly_report["total_employee_salary"] / elapsed_days
+        if elapsed_days > 0
+        else ZERO
+    )
+
+    overtime_average = (
+        monthly_report["total_overtime"] / elapsed_days
+        if elapsed_days > 0
+        else ZERO
+    )
+
+    balance_average = (
+        monthly_report["cash_balance"] / elapsed_days
+        if elapsed_days > 0
+        else ZERO
+    )
+
     return {
         "date": target_date,
         "today": {
@@ -114,6 +146,13 @@ async def get_dashboard(
             "employee_salary": monthly_report["total_employee_salary"],
             "overtime": monthly_report["total_overtime"],
             "balance": monthly_report["cash_balance"],
+        },
+        "averages": {
+            "cash_sales": cash_sales_average,
+            "total_expenses": expenses_average,
+            "employee_salary": employee_salary_average,
+            "overtime": overtime_average,
+            "balance": balance_average,
         },
         "employees": {
             "count": employee_count,

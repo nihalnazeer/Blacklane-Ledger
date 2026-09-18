@@ -392,6 +392,19 @@ export default function ReportsPage() {
                               </span>
                             )}
 
+                            {!month.is_closed && !future && (
+                              <span
+                                className="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                                style={{
+                                  border: `1px solid rgba(224, 184, 110, 0.35)`,
+                                  backgroundColor: "rgba(224, 184, 110, 0.08)",
+                                  color: "#D8B477",
+                                }}
+                              >
+                                Review needed
+                              </span>
+                            )}
+
                             {future && (
                               <span
                                 className="rounded-full px-2 py-0.5 text-[10px] font-medium"
@@ -411,9 +424,13 @@ export default function ReportsPage() {
                           >
                             {future
                               ? "No financial activity available yet"
-                              : month.is_current
-                                ? `Through day ${month.days_available}`
-                                : `${month.days_available} days available`}
+                              : month.is_closed
+                                ? month.is_current
+                                  ? `Through day ${month.days_available}`
+                                  : `${month.days_available} days available`
+                                : month.is_current
+                                  ? `Through day ${month.days_available} · Review needed`
+                                  : `${month.days_available} days available · Review needed`}
                           </p>
                         </div>
 

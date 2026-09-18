@@ -1,10 +1,12 @@
-
 import { ApiClient } from "./client";
 import type {
   Employee,
   EmployeeBalance,
   EmployeeCalendar,
   EmployeeCreate,
+  EmployeeDailyRecord,
+  EmployeeDailyRecordCreate,
+  EmployeeDailyRecordUpdate,
   EmployeeFinancialEvent,
   EmployeeFinancialEventCreate,
   EmployeeFinancialEventUpdate,
@@ -18,6 +20,10 @@ import type {
 
 export class EmployeesApi {
   constructor(private readonly client: ApiClient) {}
+
+  // ---------------------------------------------------------------------------
+  // Employees
+  // ---------------------------------------------------------------------------
 
   list(businessId: string): Promise<Employee[]> {
     return this.client.get<Employee[]>(
@@ -64,6 +70,10 @@ export class EmployeesApi {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Balance
+  // ---------------------------------------------------------------------------
+
   balance(
     businessId: string,
     employeeId: string,
@@ -72,6 +82,10 @@ export class EmployeesApi {
       `/api/v1/businesses/${businessId}/employees/${employeeId}/balance`,
     );
   }
+
+  // ---------------------------------------------------------------------------
+  // Calendar
+  // ---------------------------------------------------------------------------
 
   calendar(
     businessId: string,
@@ -83,6 +97,10 @@ export class EmployeesApi {
       `/api/v1/businesses/${businessId}/employees/${employeeId}/calendar?year=${year}&month=${month}`,
     );
   }
+
+  // ---------------------------------------------------------------------------
+  // Ledger / date detail
+  // ---------------------------------------------------------------------------
 
   ledger(
     businessId: string,
@@ -96,12 +114,77 @@ export class EmployeesApi {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Salary history
+  // ---------------------------------------------------------------------------
+
   listSalaryHistory(
     businessId: string,
     employeeId: string,
   ): Promise<EmployeeSalaryHistory[]> {
     return this.client.get<EmployeeSalaryHistory[]>(
       `/api/v1/businesses/${businessId}/employees/${employeeId}/salary-history`,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Daily employee records
+  // ---------------------------------------------------------------------------
+
+  listDailyRecords(
+    businessId: string,
+    employeeId: string,
+    recordDate?: string,
+  ): Promise<EmployeeDailyRecord[]> {
+    const query = recordDate
+      ? `?date=${encodeURIComponent(recordDate)}`
+      : "";
+
+    return this.client.get<EmployeeDailyRecord[]>(
+      `/api/v1/businesses/${businessId}/employees/${employeeId}/daily-records${query}`,
+    );
+  }
+
+  getDailyRecord(
+    businessId: string,
+    employeeId: string,
+    recordId: string,
+  ): Promise<EmployeeDailyRecord> {
+    return this.client.get<EmployeeDailyRecord>(
+      `/api/v1/businesses/${businessId}/employees/${employeeId}/daily-records/${recordId}`,
+    );
+  }
+
+  createDailyRecord(
+    businessId: string,
+    employeeId: string,
+    data: EmployeeDailyRecordCreate,
+  ): Promise<EmployeeDailyRecord> {
+    return this.client.post<EmployeeDailyRecord>(
+      `/api/v1/businesses/${businessId}/employees/${employeeId}/daily-records`,
+      data,
+    );
+  }
+
+  updateDailyRecord(
+    businessId: string,
+    employeeId: string,
+    recordId: string,
+    data: EmployeeDailyRecordUpdate,
+  ): Promise<EmployeeDailyRecord> {
+    return this.client.patch<EmployeeDailyRecord>(
+      `/api/v1/businesses/${businessId}/employees/${employeeId}/daily-records/${recordId}`,
+      data,
+    );
+  }
+
+  deleteDailyRecord(
+    businessId: string,
+    employeeId: string,
+    recordId: string,
+  ): Promise<void> {
+    return this.client.delete<void>(
+      `/api/v1/businesses/${businessId}/employees/${employeeId}/daily-records/${recordId}`,
     );
   }
 
@@ -217,4 +300,3 @@ export class EmployeesApi {
     );
   }
 }
-

@@ -29,17 +29,30 @@ export type {
 
   // Employees
   PaymentMethod,
+  EmployeeShift,
+  EmployeeAttendanceStatus,
   EmployeeFinancialEventType,
   Employee,
   EmployeeCreate,
   EmployeeUpdate,
   EmployeeSalaryHistory,
+
+  // Employee Daily Records
+  EmployeeDailyRecord,
+  EmployeeDailyRecordCreate,
+  EmployeeDailyRecordUpdate,
+
+  // Employee Financial Events
   EmployeeFinancialEvent,
   EmployeeFinancialEventCreate,
   EmployeeFinancialEventUpdate,
+
+  // Employee Notes
   EmployeeNote,
   EmployeeNoteCreate,
   EmployeeNoteUpdate,
+
+  // Employee Balance / Calendar / Ledger
   EmployeeBalance,
   EmployeeDailySummary,
   EmployeeCalendar,
@@ -52,6 +65,8 @@ export type {
   ReportMonthly,
   ReportDailyExpenseBreakdown,
   ReportDaily,
+  DailyClosingCreate,
+  DailyClosing,
   MonthlyClosingCreate,
   MonthlyClosingUpdate,
   MonthlyClosing,
@@ -60,12 +75,14 @@ export type {
   Dashboard,
   DashboardToday,
   DashboardMonthToDate,
+  DashboardAverages,
   DashboardEmployees,
   DashboardMonthStatus,
 
   // Authentication
   User,
   LoginRequest,
+  SignupRequest,
   TokenResponse,
   RefreshRequest,
   CurrentUserResponse,

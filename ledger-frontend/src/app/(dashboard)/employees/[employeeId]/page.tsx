@@ -1,287 +1,141 @@
-
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 
-import type {
+import {
   Employee,
-  EmployeeBalance,
   EmployeeCalendar,
   EmployeeDailySummary,
-  EmployeeFinancialEvent,
-  EmployeeFinancialEventCreate,
-  EmployeeFinancialEventType,
-  EmployeeNote,
 } from "@blacklane-ledger/sdk";
-
 import { sdk } from "@/lib/api";
 
-type EventFilter = "all" | EmployeeFinancialEventType;
-
-const EVENT_TYPES: {
-  value: EmployeeFinancialEventType;
-  label: string;
-}[] = [
-  { value: "advance", label: "Advance" },
-  { value: "overtime", label: "Overtime / Extra Salary" },
-  { value: "leave_no_salary", label: "Leave — No Salary" },
-  { value: "payment", label: "Payment" },
-  { value: "debt_offset", label: "Debt Offset" },
-];
-
-const EVENT_TYPE_LABELS: Record<EmployeeFinancialEventType, string> = {
-  advance: "Advance",
-  overtime: "Overtime",
-  leave_no_salary: "Leave — No Salary",
-  payment: "Payment",
-  debt_offset: "Debt Offset",
+/**
+ * Brand palette — sourced from the Blacklane Ledger brand sheet (Dark Mode set).
+ *
+ *   Text / Primary  #FAFAFA
+ *   Secondary       #9CA3AF
+ *   Muted           #6B7280
+ *   Surface         #1F2937
+ *   Background      #0B0F14
+ *
+ * The brand sheet doesn't give hex values for the border, accent, warning,
+ * or error colors it uses visually (border is implied by contrast, the
+ * accent is the deep green swatch next to the palette, and there's no
+ * warning/error color at all). Those are best-guess approximations below —
+ * swap them for exact values if you have them.
+ */
+const colors = {
+  background: "#0B0F14",
+  surface: "#1F2937",
+  border: "rgba(156, 163, 175, 0.16)", // derived from Secondary #9CA3AF at low opacity
+  text: "#FAFAFA",
+  secondary: "#9CA3AF",
+  muted: "#6B7280",
+  accent: "#1F7A5C", // approximation of the brand sheet's deep-green swatch
+  accentSoft: "rgba(31, 122, 94, 0.16)",
+  warning: "#C49A5A",
+  error: "#E08A6E", // not in the brand sheet — kept from the previous build
+  errorBackground: "rgba(224, 138, 110, 0.12)",
 };
 
-function formatMoney(value: number | string | null | undefined): string {
-  const amount = Number(value ?? 0);
+function getLocalDateString(date: Date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
 
-  return amount.toLocaleString("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  return `${year}-${month}-${day}`;
 }
 
-function formatDate(dateString: string): string {
-  const date = new Date(`${dateString}T00:00:00`);
+function getMonthString(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
 
-  return date.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+  return `${year}-${month}`;
 }
 
-function formatShortDate(dateString: string): string {
-  const date = new Date(`${dateString}T00:00:00`);
+function parseLocalDate(dateString: string): Date {
+  const [year, month, day] = dateString.split("-").map(Number);
 
-  return date.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-  });
+  return new Date(year, month - 1, day);
 }
 
-function formatMonth(year: number, month: number): string {
-  return new Date(year, month - 1, 1).toLocaleDateString("en-IN", {
+function formatMonth(monthString: string): string {
+  const date = parseLocalDate(`${monthString}-01`);
+
+  return date.toLocaleDateString("en-MY", {
     month: "long",
     year: "numeric",
   });
 }
 
-function getMonthName(year: number, month: number): string {
-  return new Date(year, month - 1, 1).toLocaleDateString("en-IN", {
-    month: "long",
-  });
+function formatDate(dateString: string): {
+  weekday: string;
+  day: string;
+  month: string;
+} {
+  const date = parseLocalDate(dateString);
+
+  return {
+    weekday: date.toLocaleDateString("en-MY", {
+      weekday: "short",
+    }),
+    day: date.toLocaleDateString("en-MY", {
+      day: "2-digit",
+    }),
+    month: date.toLocaleDateString("en-MY", {
+      month: "short",
+    }),
+  };
 }
 
-function getEventTypeLabel(type: EmployeeFinancialEventType): string {
-  return EVENT_TYPE_LABELS[type] ?? type;
+function isCurrentMonth(monthString: string, today: string): boolean {
+  return monthString === today.slice(0, 7);
 }
 
-function getEventSign(type: EmployeeFinancialEventType): string {
-  switch (type) {
-    case "overtime":
-      return "+";
-
-    case "leave_no_salary":
-      return "-";
-
-    case "advance":
-      return "-";
-
-    case "payment":
-      return "-";
-
-    case "debt_offset":
-      return "+";
-
-    default:
-      return "";
-  }
+function isToday(dateString: string, today: string): boolean {
+  return dateString === today;
 }
 
-function getBalanceLabel(balance: number): string {
-  if (balance > 0) {
-    return "Business owes employee";
-  }
-
-  if (balance < 0) {
-    return "Employee owes business";
-  }
-
-  return "Settled";
-}
-
-function getBalanceClass(balance: number): string {
-  if (balance > 0) {
-    return "text-emerald-400";
-  }
-
-  if (balance < 0) {
-    return "text-red-400";
-  }
-
-  return "text-zinc-300";
-}
-
-function getDayBalanceClass(balance: number): string {
-  if (balance > 0) {
-    return "text-emerald-400";
-  }
-
-  if (balance < 0) {
-    return "text-red-400";
-  }
-
-  return "text-zinc-400";
-}
-
-export default function EmployeeDetailPage() {
-  const router = useRouter();
+export default function EmployeeDateSelectionPage() {
   const params = useParams();
+  const router = useRouter();
 
-  const employeeId =
-    typeof params.employeeId === "string" ? params.employeeId : null;
+  const employeeId = params.employeeId as string;
 
   const [businessId, setBusinessId] = useState<string | null>(null);
 
   const [employee, setEmployee] = useState<Employee | null>(null);
-  const [balance, setBalance] = useState<EmployeeBalance | null>(null);
   const [calendar, setCalendar] = useState<EmployeeCalendar | null>(null);
 
-  const [events, setEvents] = useState<EmployeeFinancialEvent[]>([]);
-  const [notes, setNotes] = useState<EmployeeNote[]>([]);
+  const [loadingEmployee, setLoadingEmployee] = useState(true);
+  const [loadingCalendar, setLoadingCalendar] = useState(true);
 
-  const [loading, setLoading] = useState(true);
-  const [activityLoading, setActivityLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const today = useMemo(() => new Date(), []);
+  /*
+   * Use the browser's local calendar date.
+   *
+   * Do NOT use:
+   * new Date().toISOString().split("T")[0]
+   *
+   * because that converts the date to UTC first.
+   *
+   * This is important around midnight in Malaysia (UTC+8).
+   */
+  const today = useMemo(() => getLocalDateString(), []);
 
-  const todayString = useMemo(
-    () => today.toISOString().slice(0, 10),
-    [today],
+  const [selectedMonth, setSelectedMonth] = useState(
+    getMonthString(new Date())
   );
 
-  const [selectedYear, setSelectedYear] = useState(today.getFullYear());
-  const [selectedMonth, setSelectedMonth] = useState(today.getMonth() + 1);
-
-  const [selectedDay, setSelectedDay] =
-    useState<EmployeeDailySummary | null>(null);
-
-  const [eventFilter, setEventFilter] = useState<EventFilter>("all");
-
-  const [showEventModal, setShowEventModal] = useState(false);
-  const [showNoteModal, setShowNoteModal] = useState(false);
-
-  const [savingEvent, setSavingEvent] = useState(false);
-  const [savingNote, setSavingNote] = useState(false);
-
-  const [eventType, setEventType] =
-    useState<EmployeeFinancialEventType>("advance");
-
-  const [eventDate, setEventDate] = useState(todayString);
-
-  const [eventAmount, setEventAmount] = useState("");
-  const [eventDescription, setEventDescription] = useState("");
-  const [eventNote, setEventNote] = useState("");
-
-  const [noteDate, setNoteDate] = useState(todayString);
-
-  const [noteTitle, setNoteTitle] = useState("");
-  const [noteContent, setNoteContent] = useState("");
-
-  const loadEmployee = useCallback(async () => {
-    if (!businessId || !employeeId) {
-      return;
-    }
-
-    const currentBusinessId = businessId;
-    const currentEmployeeId = employeeId;
-
-    const [employeeResult, balanceResult, calendarResult] =
-      await Promise.all([
-        sdk.employees.get(currentBusinessId, currentEmployeeId),
-        sdk.employees.balance(currentBusinessId, currentEmployeeId),
-        sdk.employees.calendar(
-          currentBusinessId,
-          currentEmployeeId,
-          selectedYear,
-          selectedMonth,
-        ),
-      ]);
-
-    setEmployee(employeeResult);
-    setBalance(balanceResult);
-    setCalendar(calendarResult);
-  }, [businessId, employeeId, selectedYear, selectedMonth]);
-
-  const loadActivity = useCallback(async () => {
-    if (!businessId || !employeeId) {
-      return;
-    }
-
-    const currentBusinessId = businessId;
-    const currentEmployeeId = employeeId;
-
-    setActivityLoading(true);
-
-    try {
-      /*
-       * Load events and notes independently.
-       *
-       * Events use the SDK's financial-events endpoint:
-       * /api/v1/businesses/{businessId}/employees/{employeeId}/financial-events
-       *
-       * Notes use:
-       * /api/v1/businesses/{businessId}/employees/{employeeId}/notes
-       *
-       * Keeping these requests independent means one failed activity
-       * endpoint does not prevent the other activity type from loading.
-       */
-
-      const [eventsResult, notesResult] = await Promise.allSettled([
-        sdk.employees.listEvents(
-          currentBusinessId,
-          currentEmployeeId,
-        ),
-        sdk.employees.listNotes(
-          currentBusinessId,
-          currentEmployeeId,
-        ),
-      ]);
-
-      if (eventsResult.status === "fulfilled") {
-        setEvents(eventsResult.value);
-      } else {
-        console.error(
-          "Failed to load employee financial events:",
-          eventsResult.reason,
-        );
-      }
-
-      if (notesResult.status === "fulfilled") {
-        setNotes(notesResult.value);
-      } else {
-        console.error(
-          "Failed to load employee notes:",
-          notesResult.reason,
-        );
-      }
-    } finally {
-      setActivityLoading(false);
-    }
-  }, [businessId, employeeId]);
-
+  /*
+   * Get the business ID from localStorage.
+   */
   useEffect(() => {
-    const storedBusinessId = window.localStorage.getItem("business_id");
+    const storedBusinessId = localStorage.getItem("business_id");
 
-    if (!storedBusinessId) {
+    if (!storedBusinessId || storedBusinessId === "businessId") {
       router.replace("/businesses");
       return;
     }
@@ -289,1368 +143,567 @@ export default function EmployeeDetailPage() {
     setBusinessId(storedBusinessId);
   }, [router]);
 
-  useEffect(() => {
-    if (!businessId || !employeeId) {
+  const loadEmployee = useCallback(async () => {
+    if (!businessId) {
       return;
     }
 
-    let cancelled = false;
-
-    async function load() {
-      setLoading(true);
+    try {
+      setLoadingEmployee(true);
       setError(null);
 
-      try {
-        await loadEmployee();
+      const result = await sdk.employees.get(
+        businessId,
+        employeeId
+      );
 
-        if (cancelled) {
-          return;
-        }
+      setEmployee(result);
+    } catch (err) {
+      console.error("Failed to load employee:", err);
 
-        await loadActivity();
-      } catch (err) {
-        console.error("Failed to load employee:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load employee."
+      );
+    } finally {
+      setLoadingEmployee(false);
+    }
+  }, [businessId, employeeId]);
 
-        if (!cancelled) {
-          setError(
-            err instanceof Error
-              ? err.message
-              : "Failed to load employee",
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
+  const loadCalendar = useCallback(async () => {
+    if (!businessId) {
+      return;
     }
 
-    void load();
+    try {
+      setLoadingCalendar(true);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    businessId,
-    employeeId,
-    selectedYear,
-    selectedMonth,
-    loadEmployee,
-    loadActivity,
-  ]);
+      const [yearString, monthString] = selectedMonth.split("-");
+
+      const year = Number(yearString);
+      const month = Number(monthString);
+
+      const result = await sdk.employees.calendar(
+        businessId,
+        employeeId,
+        year,
+        month
+      );
+
+      setCalendar(result);
+    } catch (err) {
+      console.error("Failed to load employee calendar:", err);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load employee dates."
+      );
+    } finally {
+      setLoadingCalendar(false);
+    }
+  }, [businessId, employeeId, selectedMonth]);
+
+  useEffect(() => {
+    void loadEmployee();
+  }, [loadEmployee]);
+
+  useEffect(() => {
+    void loadCalendar();
+  }, [loadCalendar]);
 
   /*
-   * Keep today's date selected by default whenever the current month's
-   * calendar is loaded.
+   * Newest dates first.
    *
-   * For previous months, select the latest available day in that month.
+   * For the current month, today will therefore be at the top.
    */
-  useEffect(() => {
-    if (!calendar?.days?.length) {
-      return;
-    }
-
-    const sortedDays = [...calendar.days].sort((a, b) =>
-      b.date.localeCompare(a.date),
-    );
-
-    const defaultDay =
-      selectedYear === today.getFullYear() &&
-      selectedMonth === today.getMonth() + 1
-        ? sortedDays.find((day) => day.date === todayString) ??
-          sortedDays[0]
-        : sortedDays[0];
-
-    setSelectedDay(defaultDay);
-  }, [
-    calendar,
-    selectedYear,
-    selectedMonth,
-    today,
-    todayString,
-  ]);
-
-  const goToPreviousMonth = () => {
-    if (selectedMonth === 1) {
-      setSelectedYear((year) => year - 1);
-      setSelectedMonth(12);
-      return;
-    }
-
-    setSelectedMonth((month) => month - 1);
-  };
-
-  const goToNextMonth = () => {
-    const currentYear = today.getFullYear();
-    const currentMonth = today.getMonth() + 1;
-
-    if (
-      selectedYear > currentYear ||
-      (selectedYear === currentYear && selectedMonth >= currentMonth)
-    ) {
-      return;
-    }
-
-    if (selectedMonth === 12) {
-      setSelectedYear((year) => year + 1);
-      setSelectedMonth(1);
-      return;
-    }
-
-    setSelectedMonth((month) => month + 1);
-  };
-
-  const isCurrentMonth =
-    selectedYear === today.getFullYear() &&
-    selectedMonth === today.getMonth() + 1;
-
-  const canGoNext =
-    !isCurrentMonth &&
-    new Date(selectedYear, selectedMonth - 1, 1) <
-      new Date(today.getFullYear(), today.getMonth(), 1);
-
-  const filteredEvents = useMemo(() => {
-    if (eventFilter === "all") {
-      return events;
-    }
-
-    return events.filter(
-      (event) => event.event_type === eventFilter,
-    );
-  }, [events, eventFilter]);
-
-  const monthlySummary = useMemo(() => {
+  const sortedDays = useMemo(() => {
     if (!calendar?.days) {
-      return {
-        salary: 0,
-        overtime: 0,
-        payments: 0,
-        advances: 0,
-        balance: 0,
-        workingDays: 0,
-      };
+      return [];
     }
 
-    return calendar.days.reduce(
-      (summary, day) => {
-        summary.salary += Number(day.salary_earned ?? 0);
-        summary.overtime += Number(day.overtime ?? 0);
-        summary.payments += Number(day.payments ?? 0);
-        summary.advances += Number(day.advances ?? 0);
-        summary.balance += Number(day.balance ?? 0);
-
-        if (Number(day.salary_earned ?? 0) > 0) {
-          summary.workingDays += 1;
-        }
-
-        return summary;
-      },
-      {
-        salary: 0,
-        overtime: 0,
-        payments: 0,
-        advances: 0,
-        balance: 0,
-        workingDays: 0,
-      },
+    return [...calendar.days].sort((a, b) =>
+      b.date.localeCompare(a.date)
     );
   }, [calendar]);
 
-  const openEventModal = (
-    type?: EmployeeFinancialEventType,
-  ) => {
-    setEventType(type ?? "advance");
-
-    setEventDate(
-      selectedDay?.date ??
-        todayString,
-    );
-
-    setEventAmount("");
-    setEventDescription("");
-    setEventNote("");
-    setShowEventModal(true);
-  };
-
-  const closeEventModal = () => {
-    if (savingEvent) {
-      return;
-    }
-
-    setShowEventModal(false);
-  };
-
-  const createEvent = async () => {
-    if (!businessId || !employeeId) {
-      return;
-    }
-
-    if (!eventDate) {
-      return;
-    }
-
-    if (
-      eventType !== "leave_no_salary" &&
-      (!eventAmount || Number(eventAmount) <= 0)
-    ) {
-      return;
-    }
-
-    setSavingEvent(true);
-
-    try {
-      const data: EmployeeFinancialEventCreate = {
-        event_date: eventDate,
-        event_type: eventType,
-        amount:
-          eventType === "leave_no_salary"
-            ? "0"
-            : eventAmount,
-        description:
-          eventDescription.trim() ||
-          getEventTypeLabel(eventType),
-        note: eventNote.trim() || null,
-      };
-
-      await sdk.employees.createEvent(
-        businessId,
-        employeeId,
-        data,
-      );
-
-      setShowEventModal(false);
-
-      await Promise.all([
-        loadEmployee(),
-        loadActivity(),
-      ]);
-
-      if (selectedDay) {
-        try {
-          const updatedLedger =
-            await sdk.employees.ledger(
-              businessId,
-              employeeId,
-              selectedDay.date,
-            );
-
-          setSelectedDay({
-            ...selectedDay,
-            salary_earned: updatedLedger.salary_earned,
-            overtime: updatedLedger.overtime,
-            leave_no_salary:
-              updatedLedger.leave_no_salary,
-            payments: updatedLedger.payments,
-            advances: updatedLedger.advances,
-            debt_offsets:
-              updatedLedger.debt_offsets,
-            balance: updatedLedger.balance,
-          });
-        } catch (err) {
-          console.error(
-            "Failed to refresh selected day:",
-            err,
-          );
-        }
-      }
-    } catch (err) {
-      console.error(
-        "Failed to create employee event:",
-        err,
-      );
-
-      window.alert(
-        err instanceof Error
-          ? err.message
-          : "Failed to create event",
-      );
-    } finally {
-      setSavingEvent(false);
-    }
-  };
-
-  const createNote = async () => {
-    if (!businessId || !employeeId) {
-      return;
-    }
-
-    if (!noteTitle.trim() || !noteContent.trim()) {
-      return;
-    }
-
-    setSavingNote(true);
-
-    try {
-      await sdk.employees.createNote(
-        businessId,
-        employeeId,
-        {
-          note_date: noteDate,
-          title: noteTitle.trim(),
-          content: noteContent.trim(),
-        },
-      );
-
-      setNoteTitle("");
-      setNoteContent("");
-      setShowNoteModal(false);
-
-      await loadActivity();
-    } catch (err) {
-      console.error(
-        "Failed to create employee note:",
-        err,
-      );
-
-      window.alert(
-        err instanceof Error
-          ? err.message
-          : "Failed to create note",
-      );
-    } finally {
-      setSavingNote(false);
-    }
-  };
-
-  const openDay = (
-    day: EmployeeDailySummary,
-  ) => {
-    if (!employeeId) {
-      return;
-    }
-
-    router.push(
-      `/employees/${employeeId}/${day.date}`,
-    );
-  };
-
-  const goBack = () => {
-    router.push("/employees");
-  };
-
-  if (loading) {
-    return (
-      <main className="min-h-dvh bg-[#09090b] text-white">
-        <div className="mx-auto flex min-h-dvh max-w-6xl items-center justify-center px-4">
-          <div className="text-sm text-zinc-400">
-            Loading employee...
-          </div>
-        </div>
-      </main>
-    );
-  }
-
-  if (error || !employee) {
-    return (
-      <main className="min-h-dvh bg-[#09090b] text-white">
-        <div className="mx-auto flex min-h-dvh max-w-6xl items-center justify-center px-4">
-          <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-6 text-center">
-            <h1 className="text-lg font-semibold">
-              Unable to load employee
-            </h1>
-
-            <p className="mt-2 text-sm text-zinc-500">
-              {error ?? "Employee not found."}
-            </p>
-
-            <button
-              type="button"
-              onClick={goBack}
-              className="mt-6 rounded-xl bg-white px-4 py-2 text-sm font-medium text-black transition hover:bg-zinc-200"
-            >
-              Back to employees
-            </button>
-          </div>
-        </div>
-      </main>
-    );
-  }
-
-  const currentBalance = Number(
-    balance?.balance ?? 0,
-  );
-
   /*
-   * Always display the newest date first.
+   * has_record is the backend source of truth.
    *
-   * The backend already limits the current month to today, so no
-   * future dates are introduced here.
+   * Do not use salary_amount here because zero salary can be valid
+   * for leave.
    */
-  const sortedCalendarDays = calendar?.days
-    ? [...calendar.days].sort((a, b) =>
-        b.date.localeCompare(a.date),
-      )
-    : [];
+  const incompleteDays = useMemo(() => {
+    return sortedDays.filter((day) => !day.has_record);
+  }, [sortedDays]);
 
-  return (
-    <main className="min-h-dvh bg-[#09090b] text-white">
-      <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
-        {/* Header */}
-        <header className="mb-6">
+  const monthIsCurrent = isCurrentMonth(selectedMonth, today);
+
+  const canGoNextMonth = useMemo(() => {
+    const currentMonth = today.slice(0, 7);
+
+    return selectedMonth < currentMonth;
+  }, [selectedMonth, today]);
+
+  const canGoPreviousMonth = useMemo(() => {
+    if (!employee?.accounting_start_date) {
+      return true;
+    }
+
+    const accountingMonth =
+      employee.accounting_start_date.slice(0, 7);
+
+    return selectedMonth > accountingMonth;
+  }, [employee?.accounting_start_date, selectedMonth]);
+
+  const goToPreviousMonth = () => {
+    if (!canGoPreviousMonth) {
+      return;
+    }
+
+    const date = parseLocalDate(`${selectedMonth}-01`);
+
+    date.setMonth(date.getMonth() - 1);
+
+    setSelectedMonth(getMonthString(date));
+  };
+
+  const goToNextMonth = () => {
+    if (!canGoNextMonth) {
+      return;
+    }
+
+    const date = parseLocalDate(`${selectedMonth}-01`);
+
+    date.setMonth(date.getMonth() + 1);
+
+    const nextMonth = getMonthString(date);
+
+    if (nextMonth <= today.slice(0, 7)) {
+      setSelectedMonth(nextMonth);
+    }
+  };
+
+  const goToToday = () => {
+    setSelectedMonth(today.slice(0, 7));
+  };
+
+  const handleDateClick = (day: EmployeeDailySummary) => {
+    router.push(`/employees/${employeeId}/${day.date}`);
+  };
+
+  if (loadingEmployee) {
+    return (
+      <main
+        className="min-h-screen pb-28"
+        style={{
+          backgroundColor: colors.background,
+          color: colors.text,
+        }}
+      >
+        <div className="mx-auto flex min-h-[70vh] w-full max-w-3xl items-center justify-center px-4">
+          <p
+            className="text-sm"
+            style={{ color: colors.secondary }}
+          >
+            Loading employee...
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  if (!employee) {
+    return (
+      <main
+        className="min-h-screen pb-28"
+        style={{
+          backgroundColor: colors.background,
+          color: colors.text,
+        }}
+      >
+        <div className="mx-auto w-full max-w-3xl px-4 py-5 sm:px-6 sm:py-8">
           <button
             type="button"
-            onClick={goBack}
-            className="mb-5 flex items-center gap-2 text-sm text-zinc-500 transition hover:text-white"
+            onClick={() => router.push("/employees")}
+            className="mb-6 inline-flex items-center gap-2 text-sm transition-opacity hover:opacity-80"
+            style={{ color: colors.secondary }}
           >
-            <span aria-hidden="true">←</span>
+            <span className="text-lg leading-none">←</span>
             Employees
           </button>
 
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">
+          <div
+            className="rounded-lg px-4 py-3 text-sm"
+            style={{
+              backgroundColor: colors.errorBackground,
+              color: colors.error,
+              border: `1px solid ${colors.border}`,
+            }}
+          >
+            {error ?? "Employee not found."}
+          </div>
+        </div>
+
+        <BottomNavigation />
+      </main>
+    );
+  }
+
+  return (
+    <main
+      className="min-h-screen pb-28"
+      style={{
+        backgroundColor: colors.background,
+        color: colors.text,
+      }}
+    >
+      <div className="mx-auto w-full max-w-3xl px-4 py-5 sm:px-6 sm:py-8">
+        {/* Header */}
+        <div className="mb-6 flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <button
+              type="button"
+              onClick={() => router.push("/employees")}
+              className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-opacity hover:opacity-80"
+              style={{
+                color: colors.secondary,
+              }}
+              aria-label="Back to employees"
+            >
+              <span className="text-xl leading-none">←</span>
+            </button>
+
+            <div className="min-w-0">
+              <p
+                className="text-[11px] font-semibold uppercase tracking-[0.18em]"
+                style={{ color: colors.accent }}
+              >
+                Employee records
+              </p>
+
+              <h1
+                className="mt-1 truncate text-2xl font-bold tracking-tight sm:text-3xl"
+                style={{ color: colors.text }}
+              >
                 {employee.name}
               </h1>
 
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-zinc-500">
-                <span>
-                  ₹{formatMoney(employee.daily_salary)} / day
-                </span>
-
-                <span className="text-zinc-700">
-                  •
-                </span>
-
-                <span className="capitalize">
-                  {employee.payment_method} payment
-                </span>
-
-                {!employee.is_active && (
-                  <>
-                    <span className="text-zinc-700">
-                      •
-                    </span>
-
-                    <span className="text-amber-400">
-                      Inactive
-                    </span>
-                  </>
-                )}
-              </div>
+              <p
+                className="mt-1 text-sm"
+                style={{ color: colors.secondary }}
+              >
+                Select a date to manage the daily record
+              </p>
             </div>
-
-            <button
-              type="button"
-              onClick={() => openEventModal()}
-              className="rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-black transition hover:bg-zinc-200"
-            >
-              + Add transaction
-            </button>
-          </div>
-        </header>
-
-        {/* Balance */}
-        <section className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
-            <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">
-              Current balance
-            </p>
-
-            <p
-              className={`mt-2 text-2xl font-semibold ${getBalanceClass(
-                currentBalance,
-              )}`}
-            >
-              {currentBalance < 0
-                ? "-"
-                : ""}
-              ₹
-              {formatMoney(
-                Math.abs(currentBalance),
-              )}
-            </p>
-
-            <p className="mt-1 text-xs text-zinc-600">
-              {getBalanceLabel(
-                currentBalance,
-              )}
-            </p>
           </div>
 
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
-            <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">
-              Daily salary
-            </p>
+          <button
+            type="button"
+            aria-label="More options"
+            title="Export, settings, and help — coming soon"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-lg transition-opacity hover:opacity-70"
+            style={{ color: colors.secondary }}
+          >
+            ⋯
+          </button>
+        </div>
 
-            <p className="mt-2 text-2xl font-semibold text-white">
-              ₹
-              {formatMoney(
-                employee.daily_salary,
-              )}
-            </p>
+        {/* Accounting start */}
+        <div
+          className="mb-5 text-xs"
+          style={{ color: colors.muted }}
+        >
+          Records from{" "}
+          <span style={{ color: colors.secondary }}>
+            {parseLocalDate(
+              employee.accounting_start_date
+            ).toLocaleDateString("en-MY", {
+              day: "2-digit",
+              month: "short",
+              year: "numeric",
+            })}
+          </span>
+        </div>
 
-            <p className="mt-1 text-xs text-zinc-600">
-              Current rate
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
-            <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">
-              This month
-            </p>
-
-            <p className="mt-2 text-2xl font-semibold text-white">
-              ₹
-              {formatMoney(
-                monthlySummary.salary,
-              )}
-            </p>
-
-            <p className="mt-1 text-xs text-zinc-600">
-              Salary earned
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
-            <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">
-              Working days
-            </p>
-
-            <p className="mt-2 text-2xl font-semibold text-white">
-              {monthlySummary.workingDays}
-            </p>
-
-            <p className="mt-1 text-xs text-zinc-600">
-              {getMonthName(
-                selectedYear,
-                selectedMonth,
-              )}
-            </p>
-          </div>
-        </section>
-
-        {/* Month navigation */}
-        <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-950">
-          <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-4 sm:px-5">
+        {/* Month selector */}
+        <section
+          className="mb-4 rounded-lg"
+          style={{
+            backgroundColor: colors.surface,
+            border: `1px solid ${colors.border}`,
+          }}
+        >
+          <div className="flex items-center justify-between px-3 py-3">
             <button
               type="button"
               onClick={goToPreviousMonth}
-              className="rounded-lg border border-zinc-800 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900"
+              disabled={!canGoPreviousMonth}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-xl leading-none transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-25"
+              style={{ color: colors.secondary }}
+              aria-label="Previous month"
             >
-              ←
+              ‹
             </button>
 
-            <div className="text-center">
-              <h2 className="text-base font-semibold">
-                {formatMonth(
-                  selectedYear,
-                  selectedMonth,
-                )}
-              </h2>
-
-              <p className="mt-0.5 text-xs text-zinc-600">
-                {isCurrentMonth
-                  ? "Current month — through today"
-                  : "Full month"}
-              </p>
-            </div>
+            <button
+              type="button"
+              onClick={goToToday}
+              className="text-sm font-semibold transition-opacity hover:opacity-80"
+              style={{ color: colors.text }}
+            >
+              {formatMonth(selectedMonth)}
+            </button>
 
             <button
               type="button"
               onClick={goToNextMonth}
-              disabled={!canGoNext}
-              className="rounded-lg border border-zinc-800 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-30"
+              disabled={!canGoNextMonth}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-xl leading-none transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-25"
+              style={{ color: colors.secondary }}
+              aria-label="Next month"
             >
-              →
+              ›
             </button>
           </div>
-
-          {/* Calendar */}
-          <div className="p-4 sm:p-5">
-            {!sortedCalendarDays.length ? (
-              <div className="rounded-xl border border-dashed border-zinc-800 py-12 text-center">
-                <p className="text-sm text-zinc-500">
-                  No days available for this month.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {sortedCalendarDays.map(
-                  (day) => {
-                    const dayBalance =
-                      Number(
-                        day.balance ?? 0,
-                      );
-
-                    const isSelected =
-                      selectedDay?.date ===
-                      day.date;
-
-                    const isToday =
-                      day.date ===
-                      todayString;
-
-                    return (
-                      <button
-                        key={day.date}
-                        type="button"
-                        onClick={() =>
-                          openDay(day)
-                        }
-                        className={`w-full rounded-xl border p-4 text-left transition ${
-                          isSelected
-                            ? "border-zinc-600 bg-zinc-900"
-                            : "border-zinc-800 bg-[#0d0d0f] hover:border-zinc-700 hover:bg-zinc-900/60"
-                        }`}
-                      >
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-3">
-                              <span className="text-sm font-medium text-white">
-                                {formatShortDate(
-                                  day.date,
-                                )}
-                              </span>
-
-                              {isToday && (
-                                <span className="rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-                                  Today
-                                </span>
-                              )}
-
-                              {day.leave_no_salary && (
-                                <span className="rounded-full border border-amber-900/50 bg-amber-950/30 px-2 py-0.5 text-[10px] font-medium text-amber-400">
-                                  No salary
-                                </span>
-                              )}
-                            </div>
-
-                            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-600">
-                              <span>
-                                Salary ₹
-                                {formatMoney(
-                                  day.salary_earned,
-                                )}
-                              </span>
-
-                              {Number(
-                                day.overtime ??
-                                  0,
-                              ) > 0 && (
-                                <span>
-                                  Overtime +₹
-                                  {formatMoney(
-                                    day.overtime,
-                                  )}
-                                </span>
-                              )}
-
-                              {Number(
-                                day.payments ??
-                                  0,
-                              ) > 0 && (
-                                <span>
-                                  Paid ₹
-                                  {formatMoney(
-                                    day.payments,
-                                  )}
-                                </span>
-                              )}
-
-                              {Number(
-                                day.advances ??
-                                  0,
-                              ) > 0 && (
-                                <span>
-                                  Advance ₹
-                                  {formatMoney(
-                                    day.advances,
-                                  )}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="text-left sm:text-right">
-                            <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-600">
-                              Day balance
-                            </p>
-
-                            <p
-                              className={`mt-1 text-sm font-semibold ${getDayBalanceClass(
-                                dayBalance,
-                              )}`}
-                            >
-                              {dayBalance < 0
-                                ? "-"
-                                : ""}
-                              ₹
-                              {formatMoney(
-                                Math.abs(
-                                  dayBalance,
-                                ),
-                              )}
-                            </p>
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  },
-                )}
-              </div>
-            )}
-          </div>
         </section>
 
-        {/* Selected day */}
-        {selectedDay && (
-          <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-950">
-            <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wider text-zinc-600">
-                  Daily details
-                </p>
-
-                <h2 className="mt-1 text-base font-semibold">
-                  {formatDate(
-                    selectedDay.date,
-                  )}
-                </h2>
-              </div>
-
-              <button
-                type="button"
-                onClick={() =>
-                  setSelectedDay(null)
-                }
-                className="rounded-lg px-2 py-1 text-zinc-500 transition hover:bg-zinc-900 hover:text-white"
+        {/* Completion summary */}
+        {!loadingCalendar && incompleteDays.length > 0 && (
+          <div className="mb-4 px-1">
+            <p
+              className="text-xs"
+              style={{ color: colors.secondary }}
+            >
+              <span
+                className="font-semibold"
+                style={{ color: colors.warning }}
               >
-                ✕
-              </button>
-            </div>
-
-            <div className="grid gap-px bg-zinc-800 sm:grid-cols-2 lg:grid-cols-4">
-              <div className="bg-zinc-950 p-5">
-                <p className="text-xs text-zinc-600">
-                  Salary earned
-                </p>
-
-                <p className="mt-1 text-lg font-semibold text-white">
-                  ₹
-                  {formatMoney(
-                    selectedDay.salary_earned,
-                  )}
-                </p>
-              </div>
-
-              <div className="bg-zinc-950 p-5">
-                <p className="text-xs text-zinc-600">
-                  Overtime
-                </p>
-
-                <p className="mt-1 text-lg font-semibold text-white">
-                  ₹
-                  {formatMoney(
-                    selectedDay.overtime,
-                  )}
-                </p>
-              </div>
-
-              <div className="bg-zinc-950 p-5">
-                <p className="text-xs text-zinc-600">
-                  Payments
-                </p>
-
-                <p className="mt-1 text-lg font-semibold text-white">
-                  ₹
-                  {formatMoney(
-                    selectedDay.payments,
-                  )}
-                </p>
-              </div>
-
-              <div className="bg-zinc-950 p-5">
-                <p className="text-xs text-zinc-600">
-                  Day balance
-                </p>
-
-                <p
-                  className={`mt-1 text-lg font-semibold ${getDayBalanceClass(
-                    Number(
-                      selectedDay.balance ??
-                        0,
-                    ),
-                  )}`}
-                >
-                  {Number(
-                    selectedDay.balance ??
-                      0,
-                  ) < 0
-                    ? "-"
-                    : ""}
-                  ₹
-                  {formatMoney(
-                    Math.abs(
-                      Number(
-                        selectedDay.balance ??
-                          0,
-                      ),
-                    ),
-                  )}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2 border-t border-zinc-800 p-5">
-              <button
-                type="button"
-                onClick={() =>
-                  openEventModal(
-                    "overtime",
-                  )
-                }
-                className="rounded-lg border border-zinc-800 px-3 py-2 text-xs text-zinc-300 transition hover:bg-zinc-900"
-              >
-                + Overtime
-              </button>
-
-              <button
-                type="button"
-                onClick={() =>
-                  openEventModal(
-                    "advance",
-                  )
-                }
-                className="rounded-lg border border-zinc-800 px-3 py-2 text-xs text-zinc-300 transition hover:bg-zinc-900"
-              >
-                + Advance
-              </button>
-
-              <button
-                type="button"
-                onClick={() =>
-                  openEventModal(
-                    "payment",
-                  )
-                }
-                className="rounded-lg border border-zinc-800 px-3 py-2 text-xs text-zinc-300 transition hover:bg-zinc-900"
-              >
-                + Payment
-              </button>
-
-              <button
-                type="button"
-                onClick={() =>
-                  openEventModal(
-                    "leave_no_salary",
-                  )
-                }
-                className="rounded-lg border border-zinc-800 px-3 py-2 text-xs text-zinc-300 transition hover:bg-zinc-900"
-              >
-                Mark no salary
-              </button>
-            </div>
-          </section>
+                {incompleteDays.length}{" "}
+                {incompleteDays.length === 1 ? "day" : "days"}
+              </span>{" "}
+              need filling
+            </p>
+          </div>
         )}
 
-        {/* Activity */}
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-950">
-          <div className="border-b border-zinc-800 px-5 py-5">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-base font-semibold">
-                  Activity
-                </h2>
-
-                <p className="mt-1 text-xs text-zinc-600">
-                  Transactions and notes for this employee
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={() =>
-                  setShowNoteModal(true)
-                }
-                className="rounded-lg border border-zinc-800 px-3 py-2 text-xs text-zinc-300 transition hover:bg-zinc-900"
-              >
-                + Add note
-              </button>
-            </div>
-
-            <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
-              <button
-                type="button"
-                onClick={() =>
-                  setEventFilter("all")
-                }
-                className={`whitespace-nowrap rounded-full px-3 py-1.5 text-xs transition ${
-                  eventFilter === "all"
-                    ? "bg-white text-black"
-                    : "border border-zinc-800 text-zinc-500 hover:text-white"
-                }`}
-              >
-                All
-              </button>
-
-              {EVENT_TYPES.map(
-                (type) => (
-                  <button
-                    key={type.value}
-                    type="button"
-                    onClick={() =>
-                      setEventFilter(
-                        type.value,
-                      )
-                    }
-                    className={`whitespace-nowrap rounded-full px-3 py-1.5 text-xs transition ${
-                      eventFilter ===
-                      type.value
-                        ? "bg-white text-black"
-                        : "border border-zinc-800 text-zinc-500 hover:text-white"
-                    }`}
-                  >
-                    {type.label}
-                  </button>
-                ),
-              )}
-            </div>
+        {!loadingCalendar && incompleteDays.length === 0 && (
+          <div className="mb-4 px-1">
+            <p
+              className="text-xs"
+              style={{ color: colors.muted }}
+            >
+              All available days are filled
+            </p>
           </div>
+        )}
 
-          {activityLoading ? (
-            <div className="px-5 py-12 text-center text-sm text-zinc-600">
-              Loading activity...
+        {/* Date list */}
+        <section
+          className="overflow-hidden rounded-lg"
+          style={{
+            backgroundColor: colors.surface,
+            border: `1px solid ${colors.border}`,
+          }}
+        >
+          {loadingCalendar ? (
+            <div className="space-y-px">
+              <div
+                className="h-14 animate-pulse"
+                style={{ backgroundColor: colors.surface }}
+              />
+              <div
+                className="h-14 animate-pulse"
+                style={{ backgroundColor: colors.surface }}
+              />
+              <div
+                className="h-14 animate-pulse"
+                style={{ backgroundColor: colors.surface }}
+              />
+            </div>
+          ) : sortedDays.length === 0 ? (
+            <div className="px-4 py-12 text-center">
+              <p
+                className="text-sm"
+                style={{ color: colors.secondary }}
+              >
+                No dates available for this month.
+              </p>
             </div>
           ) : (
-            <div className="divide-y divide-zinc-800">
-              {filteredEvents.length ===
-                0 &&
-              notes.length === 0 ? (
-                <div className="px-5 py-12 text-center">
-                  <p className="text-sm text-zinc-500">
-                    No activity yet.
-                  </p>
+            sortedDays.map((day, index) => {
+              const dateInfo = formatDate(day.date);
+              const todayDate = isToday(day.date, today);
+              const incomplete = !day.has_record;
 
-                  <p className="mt-1 text-xs text-zinc-700">
-                    Transactions and notes will appear here.
-                  </p>
-                </div>
-              ) : (
-                <>
-                  {filteredEvents.map(
-                    (event) => {
-                      const amount =
-                        Number(
-                          event.amount ??
-                            0,
-                        );
+              return (
+                <button
+                  key={day.date}
+                  type="button"
+                  onClick={() => handleDateClick(day)}
+                  className="group flex w-full items-center gap-4 px-4 py-3.5 text-left transition-opacity hover:opacity-80"
+                  style={{
+                    borderTop:
+                      index === 0
+                        ? undefined
+                        : `1px solid ${colors.border}`,
+                    backgroundColor: todayDate
+                      ? colors.accentSoft
+                      : colors.surface,
+                  }}
+                >
+                  {/* Date */}
+                  <div className="w-14 shrink-0 text-center">
+                    <p
+                      className="text-[10px] font-medium uppercase tracking-wide"
+                      style={{ color: colors.muted }}
+                    >
+                      {dateInfo.month}
+                    </p>
 
-                      return (
-                        <div
-                          key={event.id}
-                          className="px-5 py-4"
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="rounded-full border border-zinc-800 bg-zinc-900 px-2 py-1 text-[10px] font-medium text-zinc-400">
-                                  {getEventTypeLabel(
-                                    event.event_type,
-                                  )}
-                                </span>
+                    <p
+                      className="mt-0.5 text-xl font-bold leading-tight"
+                      style={{
+                        color: todayDate
+                          ? colors.accent
+                          : colors.text,
+                      }}
+                    >
+                      {dateInfo.day}
+                    </p>
+                  </div>
 
-                                <span className="text-xs text-zinc-600">
-                                  {formatDate(
-                                    event.event_date,
-                                  )}
-                                </span>
-                              </div>
-
-                              <p className="mt-2 text-sm font-medium text-zinc-200">
-                                {
-                                  event.description
-                                }
-                              </p>
-
-                              {event.note && (
-                                <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-zinc-600">
-                                  {
-                                    event.note
-                                  }
-                                </p>
-                              )}
-                            </div>
-
-                            <div className="shrink-0 text-right">
-                              <p
-                                className={`text-sm font-semibold ${
-                                  event.event_type ===
-                                  "overtime"
-                                    ? "text-emerald-400"
-                                    : event.event_type ===
-                                        "leave_no_salary"
-                                      ? "text-red-400"
-                                      : "text-zinc-300"
-                                }`}
-                              >
-                                {getEventSign(
-                                  event.event_type,
-                                )}
-                                ₹
-                                {formatMoney(
-                                  Math.abs(
-                                    amount,
-                                  ),
-                                )}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    },
-                  )}
-
-                  {notes.map(
-                    (note) => (
-                      <div
-                        key={note.id}
-                        className="px-5 py-4"
+                  {/* Day information */}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p
+                        className="text-sm font-semibold"
+                        style={{
+                          color: todayDate
+                            ? colors.accent
+                            : colors.text,
+                        }}
                       >
-                        <div className="flex items-start gap-3">
-                          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900 text-xs text-zinc-500">
-                            N
-                          </div>
+                        {dateInfo.weekday}
+                      </p>
 
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-xs text-zinc-600">
-                                {formatDate(
-                                  note.note_date,
-                                )}
-                              </span>
+                      {todayDate && (
+                        <span
+                          className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                          style={{
+                            color: colors.accent,
+                            backgroundColor: colors.accentSoft,
+                          }}
+                        >
+                          Today
+                        </span>
+                      )}
+                    </div>
 
-                              <span className="rounded-full border border-zinc-800 px-2 py-0.5 text-[10px] text-zinc-500">
-                                Note
-                              </span>
-                            </div>
+                    <p
+                      className="mt-0.5 text-xs"
+                      style={{ color: colors.muted }}
+                    >
+                      {day.date}
+                    </p>
+                  </div>
 
-                            <h3 className="mt-1 text-sm font-medium text-zinc-200">
-                              {
-                                note.title
-                              }
-                            </h3>
+                  {/* Status */}
+                  <div className="flex shrink-0 items-center gap-2">
+                    {incomplete && (
+                      <>
+                        <span
+                          className="h-1.5 w-1.5 rounded-full"
+                          style={{
+                            backgroundColor: colors.warning,
+                          }}
+                          aria-hidden="true"
+                        />
 
-                            <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-zinc-600">
-                              {
-                                note.content
-                              }
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    ),
-                  )}
-                </>
-              )}
-            </div>
+                        <span
+                          className="text-[11px]"
+                          style={{ color: colors.muted }}
+                        >
+                          Pending
+                        </span>
+                      </>
+                    )}
+
+                    <span
+                      className="ml-1 text-lg leading-none"
+                      style={{ color: colors.muted }}
+                      aria-hidden="true"
+                    >
+                      ›
+                    </span>
+                  </div>
+                </button>
+              );
+            })
           )}
         </section>
+
+        {/* Current month note */}
+        {monthIsCurrent && (
+          <p
+            className="mt-4 text-center text-[11px]"
+            style={{ color: colors.muted }}
+          >
+            Dates after today are not available yet.
+          </p>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div
+            className="mt-4 rounded-md px-4 py-3 text-sm"
+            style={{
+              backgroundColor: colors.errorBackground,
+              color: colors.error,
+              border: `1px solid ${colors.border}`,
+            }}
+          >
+            {error}
+          </div>
+        )}
       </div>
 
-      {/* Add transaction modal */}
-      {showEventModal && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 p-0 sm:items-center sm:p-4">
-          <div className="max-h-[90dvh] w-full overflow-y-auto rounded-t-3xl border border-zinc-800 bg-[#101012] p-5 shadow-2xl sm:max-w-lg sm:rounded-2xl">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold">
-                  Add transaction
-                </h2>
-
-                <p className="mt-1 text-xs text-zinc-600">
-                  Add a financial event for{" "}
-                  {employee.name}
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={closeEventModal}
-                className="rounded-lg px-2 py-1 text-zinc-500 hover:bg-zinc-900 hover:text-white"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="mt-6 space-y-4">
-              <div>
-                <label className="mb-2 block text-xs font-medium text-zinc-400">
-                  Transaction type
-                </label>
-
-                <select
-                  value={eventType}
-                  onChange={(event) =>
-                    setEventType(
-                      event.target
-                        .value as EmployeeFinancialEventType,
-                    )
-                  }
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-white outline-none focus:border-zinc-600"
-                >
-                  {EVENT_TYPES.map(
-                    (type) => (
-                      <option
-                        key={type.value}
-                        value={type.value}
-                      >
-                        {type.label}
-                      </option>
-                    ),
-                  )}
-                </select>
-              </div>
-
-              <div>
-                <label className="mb-2 block text-xs font-medium text-zinc-400">
-                  Date
-                </label>
-
-                <input
-                  type="date"
-                  value={eventDate}
-                  onChange={(event) =>
-                    setEventDate(
-                      event.target.value,
-                    )
-                  }
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-white outline-none focus:border-zinc-600"
-                />
-              </div>
-
-              {eventType !==
-                "leave_no_salary" && (
-                <div>
-                  <label className="mb-2 block text-xs font-medium text-zinc-400">
-                    Amount
-                  </label>
-
-                  <div className="relative">
-                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-zinc-600">
-                      ₹
-                    </span>
-
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={eventAmount}
-                      onChange={(event) =>
-                        setEventAmount(
-                          event.target.value,
-                        )
-                      }
-                      placeholder="0.00"
-                      className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-3 pl-8 pr-3 text-sm text-white outline-none placeholder:text-zinc-700 focus:border-zinc-600"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <label className="mb-2 block text-xs font-medium text-zinc-400">
-                  Description
-                </label>
-
-                <input
-                  type="text"
-                  value={eventDescription}
-                  onChange={(event) =>
-                    setEventDescription(
-                      event.target.value,
-                    )
-                  }
-                  placeholder={
-                    eventType ===
-                    "advance"
-                      ? "e.g. Cash advance"
-                      : eventType ===
-                          "overtime"
-                        ? "e.g. Extra work"
-                        : eventType ===
-                            "payment"
-                          ? "e.g. Salary paid"
-                          : eventType ===
-                              "leave_no_salary"
-                            ? "e.g. Leave"
-                            : "e.g. Debt adjustment"
-                  }
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-white outline-none placeholder:text-zinc-700 focus:border-zinc-600"
-                />
-              </div>
-
-              <div>
-                <label className="mb-2 block text-xs font-medium text-zinc-400">
-                  Note
-                  <span className="ml-1 text-zinc-700">
-                    optional
-                  </span>
-                </label>
-
-                <textarea
-                  rows={3}
-                  value={eventNote}
-                  onChange={(event) =>
-                    setEventNote(
-                      event.target.value,
-                    )
-                  }
-                  placeholder="Additional details..."
-                  className="w-full resize-none rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-white outline-none placeholder:text-zinc-700 focus:border-zinc-600"
-                />
-              </div>
-            </div>
-
-            <div className="mt-6 flex gap-3">
-              <button
-                type="button"
-                onClick={closeEventModal}
-                disabled={savingEvent}
-                className="flex-1 rounded-xl border border-zinc-800 px-4 py-3 text-sm text-zinc-400 transition hover:bg-zinc-900 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                onClick={() =>
-                  void createEvent()
-                }
-                disabled={
-                  savingEvent ||
-                  !eventDate ||
-                  (eventType !==
-                    "leave_no_salary" &&
-                    (!eventAmount ||
-                      Number(
-                        eventAmount,
-                      ) <= 0))
-                }
-                className="flex-1 rounded-xl bg-white px-4 py-3 text-sm font-medium text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {savingEvent
-                  ? "Saving..."
-                  : "Save transaction"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add note modal */}
-      {showNoteModal && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 p-0 sm:items-center sm:p-4">
-          <div className="w-full rounded-t-3xl border border-zinc-800 bg-[#101012] p-5 shadow-2xl sm:max-w-lg sm:rounded-2xl">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold">
-                  Add note
-                </h2>
-
-                <p className="mt-1 text-xs text-zinc-600">
-                  Keep a record about this employee
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={() =>
-                  setShowNoteModal(false)
-                }
-                className="rounded-lg px-2 py-1 text-zinc-500 hover:bg-zinc-900 hover:text-white"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="mt-6 space-y-4">
-              <div>
-                <label className="mb-2 block text-xs font-medium text-zinc-400">
-                  Date
-                </label>
-
-                <input
-                  type="date"
-                  value={noteDate}
-                  onChange={(event) =>
-                    setNoteDate(
-                      event.target.value,
-                    )
-                  }
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-white outline-none focus:border-zinc-600"
-                />
-              </div>
-
-              <div>
-                <label className="mb-2 block text-xs font-medium text-zinc-400">
-                  Title
-                </label>
-
-                <input
-                  type="text"
-                  value={noteTitle}
-                  onChange={(event) =>
-                    setNoteTitle(
-                      event.target.value,
-                    )
-                  }
-                  placeholder="e.g. Employee requested leave"
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-white outline-none placeholder:text-zinc-700 focus:border-zinc-600"
-                />
-              </div>
-
-              <div>
-                <label className="mb-2 block text-xs font-medium text-zinc-400">
-                  Note
-                </label>
-
-                <textarea
-                  rows={5}
-                  value={noteContent}
-                  onChange={(event) =>
-                    setNoteContent(
-                      event.target.value,
-                    )
-                  }
-                  placeholder="Write the note..."
-                  className="w-full resize-none rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-white outline-none placeholder:text-zinc-700 focus:border-zinc-600"
-                />
-              </div>
-            </div>
-
-            <div className="mt-6 flex gap-3">
-              <button
-                type="button"
-                onClick={() =>
-                  setShowNoteModal(false)
-                }
-                disabled={savingNote}
-                className="flex-1 rounded-xl border border-zinc-800 px-4 py-3 text-sm text-zinc-400 transition hover:bg-zinc-900 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                onClick={() =>
-                  void createNote()
-                }
-                disabled={
-                  savingNote ||
-                  !noteTitle.trim() ||
-                  !noteContent.trim()
-                }
-                className="flex-1 rounded-xl bg-white px-4 py-3 text-sm font-medium text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {savingNote
-                  ? "Saving..."
-                  : "Save note"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Fixed bottom navigation */}
+      <BottomNavigation />
     </main>
   );
 }
 
+function BottomNavigation() {
+  const items = [
+    { label: "Dashboard", href: "/dashboard", active: false },
+    { label: "Sales", href: "/sales", active: false },
+    { label: "Expenses", href: "/expenses", active: false },
+    { label: "More", href: "/more", active: false },
+  ];
+
+  return (
+    <nav
+      className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t md:hidden"
+      style={{
+        backgroundColor: colors.surface,
+        borderColor: colors.border,
+        paddingBottom: "env(safe-area-inset-bottom)",
+      }}
+    >
+      {items.map((item) => (
+        <a
+          key={item.label}
+          href={item.href}
+          className="flex min-h-16 flex-col items-center justify-center gap-0.5 py-2.5 text-[11px] font-medium transition-opacity hover:opacity-80"
+          style={{
+            color: item.active ? colors.accent : colors.secondary,
+          }}
+        >
+          {item.label}
+        </a>
+      ))}
+    </nav>
+  );
+}
