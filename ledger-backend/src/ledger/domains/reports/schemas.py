@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Literal
 import uuid
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ReportMonth(BaseModel):
@@ -82,6 +82,8 @@ class DailyClosingCreate(BaseModel):
 
 
 class DailyClosingResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     business_id: uuid.UUID
     report_date: date
