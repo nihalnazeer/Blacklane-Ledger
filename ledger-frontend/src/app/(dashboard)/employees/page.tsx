@@ -283,7 +283,7 @@ export default function EmployeesPage() {
      * Default the salary-history effective date to the local current date.
      * This date is only sent to the backend when salary/payment method changes.
      */
-    setEditSalaryEffectiveFrom(getLocalDateString());
+    setEditSalaryEffectiveFrom(employee.accounting_start_date);
 
     setEditFormError(null);
     setIsEditFormOpen(true);
