@@ -2,6 +2,7 @@ import uuid
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ledger.db.session import get_db_session
@@ -336,9 +337,25 @@ async def create_employee_daily_record_endpoint(
             data,
         )
     except ValueError as exc:
+        await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
+        ) from exc
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A daily record already exists for this employee, "
+                "date, and shift."
+            ),
+        ) from exc
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to save employee daily record.",
         ) from exc
 
 
