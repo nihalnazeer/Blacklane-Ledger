@@ -332,7 +332,7 @@ async def create_employee_daily_record_endpoint(
     try:
         return await create_employee_daily_record(
             session,
-            employee,
+            employee.id,
             data,
         )
     except ValueError as exc:
@@ -504,11 +504,17 @@ async def update_employee_endpoint(
         session,
     )
 
-    return await update_employee(
-        session,
-        employee,
-        data,
-    )
+    try:
+        return await update_employee(
+            session,
+            employee,
+            data,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
 
 
 @router.delete(
@@ -583,11 +589,17 @@ async def create_financial_event_endpoint(
         session,
     )
 
-    return await create_financial_event(
-        session,
-        employee.id,
-        data,
-    )
+    try:
+        return await create_financial_event(
+            session,
+            employee.id,
+            data,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get(
@@ -654,11 +666,17 @@ async def update_financial_event_endpoint(
             detail="Financial event not found",
         )
 
-    return await update_financial_event(
-        session,
-        event,
-        data,
-    )
+    try:
+        return await update_financial_event(
+            session,
+            event,
+            data,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
 
 
 @router.delete(

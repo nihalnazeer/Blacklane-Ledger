@@ -30,8 +30,6 @@ from ledger.domains.employees.schemas import (
 )
 
 
-
-
 ZERO = Decimal("0.00")
 
 
@@ -96,7 +94,6 @@ async def list_employees(
     return list(result.scalars().all())
 
 
-
 async def create_employee(
     session: AsyncSession,
     business_id: uuid.UUID,
@@ -114,6 +111,8 @@ async def create_employee(
 
     await session.flush()
 
+    # The employee's accounting start date is also the effective date
+    # of the initial salary history entry.
     salary_history = EmployeeSalaryHistory(
         employee_id=employee.id,
         effective_from=data.accounting_start_date,
@@ -151,6 +150,14 @@ async def update_employee(
 
         if effective_from is None:
             effective_from = date.today()
+
+        # A salary history entry cannot become effective before the
+        # employee's accounting history begins.
+        if effective_from < employee.accounting_start_date:
+            raise ValueError(
+                "Salary effective date cannot be before the employee's "
+                "accounting start date"
+            )
 
         daily_salary = update_data.get(
             "daily_salary",
@@ -226,11 +233,28 @@ async def get_salary_for_date(
     employee: Employee,
     target_date: date,
 ) -> Decimal:
+    """
+    Return the employee's applicable salary rate for a date.
+
+    Important accounting rules:
+    - created_at is never used here.
+    - Dates before accounting_start_date have no applicable salary.
+    - Salary history determines the applicable rate on or after
+      accounting_start_date.
+    - employee.daily_salary remains a compatibility fallback for
+      legacy employees that may not have a salary-history row.
+    """
+
+    if target_date < employee.accounting_start_date:
+        return ZERO
+
     result = await session.execute(
         select(EmployeeSalaryHistory)
         .where(
             EmployeeSalaryHistory.employee_id == employee.id,
             EmployeeSalaryHistory.effective_from <= target_date,
+            EmployeeSalaryHistory.effective_from
+            >= employee.accounting_start_date,
         )
         .order_by(
             EmployeeSalaryHistory.effective_from.desc(),
@@ -243,6 +267,9 @@ async def get_salary_for_date(
     if history is not None:
         return history.daily_salary
 
+    # Compatibility fallback for existing employees whose initial
+    # salary-history row may be missing. This is only allowed on or
+    # after the employee's accounting start date.
     return employee.daily_salary
 
 
@@ -313,6 +340,8 @@ async def create_employee_daily_record(
     employee: Employee,
     data: EmployeeDailyRecordCreate,
 ) -> EmployeeDailyRecord:
+    # Attendance/accounting cannot exist before the employee's
+    # accounting start date.
     if data.record_date < employee.accounting_start_date:
         raise ValueError(
             "Daily record date cannot be before the employee's "
@@ -358,10 +387,18 @@ async def update_employee_daily_record(
         exclude_unset=True,
     )
 
+    employee = await session.get(
+        Employee,
+        record.employee_id,
+    )
+
+    if employee is None:
+        raise ValueError(
+            "Employee associated with this daily record was not found"
+        )
+
     if "record_date" in update_data:
-        if update_data["record_date"] < (
-            await session.get(Employee, record.employee_id)
-        ).accounting_start_date:
+        if update_data["record_date"] < employee.accounting_start_date:
             raise ValueError(
                 "Daily record date cannot be before the employee's "
                 "accounting start date"
@@ -470,6 +507,24 @@ async def create_financial_event(
     employee_id: uuid.UUID,
     data: EmployeeFinancialEventCreate,
 ) -> EmployeeFinancialEvent:
+    employee = await session.get(
+        Employee,
+        employee_id,
+    )
+
+    if employee is None:
+        raise ValueError(
+            "Employee associated with this financial event was not found"
+        )
+
+    # All employee financial activity belongs to the employee's
+    # accounting history and cannot precede accounting_start_date.
+    if data.event_date < employee.accounting_start_date:
+        raise ValueError(
+            "Financial event date cannot be before the employee's "
+            "accounting start date"
+        )
+
     event = EmployeeFinancialEvent(
         employee_id=employee_id,
         event_date=data.event_date,
@@ -495,6 +550,23 @@ async def update_financial_event(
     update_data = data.model_dump(
         exclude_unset=True,
     )
+
+    employee = await session.get(
+        Employee,
+        event.employee_id,
+    )
+
+    if employee is None:
+        raise ValueError(
+            "Employee associated with this financial event was not found"
+        )
+
+    if "event_date" in update_data:
+        if update_data["event_date"] < employee.accounting_start_date:
+            raise ValueError(
+                "Financial event date cannot be before the employee's "
+                "accounting start date"
+            )
 
     if "event_type" in update_data:
         update_data["event_type"] = update_data["event_type"].value
@@ -632,7 +704,8 @@ async def get_employee_balance(
     if through_date is None:
         through_date = date.today()
 
-    if employee.accounting_start_date > through_date:
+    # No employee accounting exists before the accounting start date.
+    if through_date < employee.accounting_start_date:
         return ZERO
 
     daily_records = await _get_daily_records_for_range(
@@ -673,7 +746,10 @@ async def get_employee_balance(
         EmployeeFinancialEventType.DEBT_OFFSET,
     )
 
-    # Daily records contain the actual salary amount and manual salary cuts.
+    # Daily records contain the actual manually recorded salary amount.
+    # Salary history determines the applicable rate, but does not itself
+    # create earned salary.
+    #
     # Leave records do not contribute salary.
     #
     # Financial-event debt/advance behavior remains as in the existing
@@ -698,6 +774,23 @@ async def get_employee_day_summary(
     employee: Employee,
     target_date: date,
 ) -> dict:
+    # A date before accounting_start_date is outside the employee's
+    # accounting history. Return a completely neutral accounting summary.
+    if target_date < employee.accounting_start_date:
+        return {
+            "date": target_date,
+            "salary_earned": ZERO,
+            "overtime": ZERO,
+            "salary_cut": ZERO,
+            "leave_no_salary": ZERO,
+            "payments": ZERO,
+            "advances": ZERO,
+            "debt_offsets": ZERO,
+            "balance": ZERO,
+            "has_record": False,
+            "has_events": False,
+        }
+
     records = await list_employee_daily_records(
         session,
         employee.id,
@@ -800,10 +893,10 @@ async def get_employee_calendar(
             current_date,
         )
 
-        # Dates before the accounting start date are outside the employee's
-        # bookkeeping history. They remain visible in the calendar only when
-        # viewing a historical month, but are marked as having no accounting
-        # activity.
+        # Dates before accounting start are outside the employee's
+        # bookkeeping history. The day-summary function already returns
+        # zero activity for these dates, so no salary can be inferred
+        # from employee existence or salary history.
         if current_date < employee.accounting_start_date:
             summary["salary_earned"] = ZERO
             summary["overtime"] = ZERO
@@ -878,6 +971,14 @@ async def get_employee_ledger(
         target_date,
     )
 
+    # Dates before accounting_start_date are outside the employee's
+    # accounting history. Do not expose salary/accounting data for them.
+    if target_date < employee.accounting_start_date:
+        records = []
+        events = []
+        daily_salary = ZERO
+        balance = ZERO
+
     return {
         "employee": employee,
         "date": target_date,
@@ -894,6 +995,7 @@ async def get_employee_ledger(
         "events": events,
         "notes": notes,
     }
+
 
 async def create_employee_note(
     session: AsyncSession,
