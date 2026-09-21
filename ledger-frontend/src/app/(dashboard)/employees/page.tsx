@@ -108,6 +108,7 @@ export default function EmployeesPage() {
   const [editDailySalary, setEditDailySalary] = useState("");
   const [editPaymentMethod, setEditPaymentMethod] =
     useState<PaymentMethod>("monthly");
+  const [editAccountingStartDate, setEditAccountingStartDate] = useState("");
   const [editSalaryEffectiveFrom, setEditSalaryEffectiveFrom] =
     useState("");
 
@@ -278,10 +279,14 @@ export default function EmployeesPage() {
     setEditName(employee.name);
     setEditDailySalary(employee.daily_salary);
     setEditPaymentMethod(employee.payment_method);
+    setEditAccountingStartDate(employee.accounting_start_date);
 
     /*
-     * Default the salary-history effective date to the local current date.
-     * This date is only sent to the backend when salary/payment method changes.
+     * Default the salary-history effective date to the employee's
+     * accounting start date.
+     *
+     * This date is only sent to the backend when the salary or
+     * payment method changes.
      */
     setEditSalaryEffectiveFrom(employee.accounting_start_date);
 
@@ -319,6 +324,11 @@ export default function EmployeesPage() {
       return;
     }
 
+    if (!editAccountingStartDate) {
+      setEditFormError("Select the employee's accounting start date.");
+      return;
+    }
+
     const salaryChanged =
       editDailySalary !== editingEmployee.daily_salary ||
       editPaymentMethod !== editingEmployee.payment_method;
@@ -339,6 +349,7 @@ export default function EmployeesPage() {
           name: editName.trim(),
           daily_salary: parsedSalary.toFixed(2),
           payment_method: editPaymentMethod,
+          accounting_start_date: editAccountingStartDate,
           ...(salaryChanged
             ? {
                 salary_effective_from: editSalaryEffectiveFrom,
@@ -803,6 +814,38 @@ export default function EmployeesPage() {
                   <option value="monthly">Monthly</option>
                   <option value="daily">Daily</option>
                 </select>
+              </label>
+
+              <label className="block">
+                <span
+                  className="mb-2 block text-sm font-semibold"
+                  style={{ color: colors.text }}
+                >
+                  Accounting start date
+                </span>
+
+                <input
+                  type="date"
+                  value={editAccountingStartDate}
+                  onChange={(event) =>
+                    setEditAccountingStartDate(event.target.value)
+                  }
+                  className="min-h-12 w-full rounded-md border px-4 text-base outline-none"
+                  style={{
+                    backgroundColor: colors.background,
+                    borderColor: colors.border,
+                    color: colors.text,
+                  }}
+                  required
+                />
+
+                <p
+                  className="mt-2 text-xs leading-5"
+                  style={{ color: colors.muted }}
+                >
+                  The date from which this employee&apos;s bookkeeping
+                  records begin.
+                </p>
               </label>
 
               <label className="block">
