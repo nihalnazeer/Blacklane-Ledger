@@ -333,7 +333,7 @@ async def create_employee_daily_record_endpoint(
     try:
         return await create_employee_daily_record(
             session,
-            employee.id,
+            employee,
             data,
         )
     except ValueError as exc:
